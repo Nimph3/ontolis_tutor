@@ -1,0 +1,91 @@
+{
+  "nodes": [
+    {
+      "id": "01_cell",
+      "name": "Клетка",
+      "attributes": {
+        "def": "Клетка — структурная и функциональная единица живых организмов. Её основные компоненты обеспечивают обмен веществ, сохранение наследственной информации и жизнедеятельность."
+      }
+    },
+    {
+      "id": "02_organelles",
+      "name": "Органоиды",
+      "attributes": {
+        "def": "Органоиды — специализированные внутриклеточные структуры, выполняющие определённые функции."
+      }
+    },
+    {
+      "id": "03_nucleus",
+      "name": "Ядро",
+      "attributes": {
+        "def": "Ядро — мембранный органоид эукариотической клетки, в котором находится большая часть её генетического материала."
+      }
+    },
+    {
+      "id": "04_mitochondria",
+      "name": "Митохондрия",
+      "attributes": {
+        "def": "Митохондрия — органоид эукариотической клетки, участвующий в клеточном дыхании и синтезе АТФ."
+      }
+    },
+    {
+      "id": "05_ribosome",
+      "name": "Рибосома",
+      "attributes": {
+        "def": "Рибосома — немембранная клеточная структура, обеспечивающая синтез белков."
+      }
+    },
+    {
+      "id": "06_membrane",
+      "name": "Клеточная мембрана",
+      "attributes": {
+        "def": "Клеточная мембрана — оболочка, отделяющая содержимое клетки от внешней среды и регулирующая транспорт веществ."
+      }
+    },
+    {
+      "id": "07_cytoplasm",
+      "name": "Цитоплазма",
+      "attributes": {
+        "def": "Цитоплазма — внутренняя среда клетки, включающая цитозоль и расположенные в нём клеточные структуры."
+      }
+    }
+  ],
+  "relations": [
+    {
+      "id": "b1",
+      "name": "contains",
+      "source_node_id": "01_cell",
+      "destination_node_id": "02_organelles"
+    },
+    {
+      "id": "b2",
+      "name": "contains",
+      "source_node_id": "01_cell",
+      "destination_node_id": "06_membrane"
+    },
+    {
+      "id": "b3",
+      "name": "contains",
+      "source_node_id": "01_cell",
+      "destination_node_id": "07_cytoplasm"
+    },
+    {
+      "id": "b4",
+      "name": "contains",
+      "source_node_id": "02_organelles",
+      "destination_node_id": "03_nucleus"
+    },
+    {
+      "id": "b5",
+      "name": "contains",
+      "source_node_id": "02_organelles",
+      "destination_node_id": "04_mitochondria"
+    },
+    {
+      "id": "b6",
+      "name": "contains",
+      "source_node_id": "02_organelles",
+      "destination_node_id": "05_ribosome"
+    }
+  ]
+}

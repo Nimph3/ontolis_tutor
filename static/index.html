@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Онтологический тьютор · OntoTutor</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">◎</div><div><strong>OntoTutor</strong><span>Обучение по графу знаний</span></div></div>
+      <div class="sidebar-scroll">
+        <section class="ontology-picker" aria-label="Онтологии">
+          <label class="field-label" for="ontologySelect">Предметная область</label>
+          <select id="ontologySelect" aria-label="Выберите онтологию"><option value="default">Исходная онтология</option></select>
+          <div class="ontology-actions">
+            <button id="uploadButton" class="upload-button" type="button">＋ Загрузить .ont</button>
+            <input id="ontologyFile" type="file" accept=".ont,.json" hidden aria-label="Загрузить файл онтологии">
+            <span class="upload-limit">до 5 МБ</span>
+          </div>
+          <p id="ontologyInfo" class="ontology-info">Выберите граф знаний для обучения.</p>
+          <details id="relationSettings" class="relation-settings">
+            <summary>Настроить типы связей <span id="relationWarning"></span></summary>
+            <p class="hint small">Для нестандартных связей выберите учебную роль. Нераспознанные связи не участвуют в маршруте.</p>
+            <div id="relationMap" class="relation-map"></div>
+            <button id="saveRelations" type="button" class="mapping-save">Сохранить роли связей</button>
+          </details>
+          <p id="ontologyError" class="error" role="alert"></p>
+        </section>
+        <div class="sidebar-header"><span class="eyebrow">НАСТРОЙКИ ОБУЧЕНИЯ</span><span id="lockLabel" class="lock-label">Доступны</span></div>
+        <h2>Что изучаем?</h2>
+        <p class="hint">Отметьте доступные темы. С какого понятия начать, решите первым вопросом в чате. Затем пройдём его ветку по DFS, и снова можно будет выбрать тему.</p>
+        <label class="field-label" for="searchTopics">Поиск понятий</label>
+        <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchTopics" type="search" placeholder="Например, нейрон…" autocomplete="off"></div>
+        <div class="topic-actions"><button id="allTopics" type="button" class="text-action">Выбрать все</button><button id="clearTopics" type="button" class="text-action">Снять все</button><span id="selectedCount">0 выбрано</span></div>
+        <div id="topicList" class="topic-list" role="group" aria-label="Список понятий"></div>
+        <div class="divider"></div>
+        <label class="field-label" for="questionCount">Минимум вопросов на сессию</label>
+        <div class="number-wrap"><input id="questionCount" type="number" min="1" max="100" value="2"><span>вопроса</span></div>
+        <p class="hint small">Обычное завершение разблокируется после заданного количества вопросов. Принудительное завершение доступно всегда.</p>
+        <button id="startButton" class="primary-button full" type="button">Начать обучение <span aria-hidden="true">→</span></button>
+        <p id="sidebarError" class="error" role="alert"></p>
+      </div>
+      <div class="sidebar-footer"><span class="status-dot"></span> <span id="graphStats">Граф не выбран</span></div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar"><div class="top-title"><span class="eyebrow">ИНТЕРАКТИВНЫЙ КУРС</span><h1>Диалог с графом знаний</h1></div><span id="sessionBadge" class="session-badge">Сессия не начата</span></header>
+
+      <div class="overview">
+        <section class="current-card" aria-live="polite"><div class="section-caption"><span class="card-icon">◈</span> ТЕКУЩАЯ ТЕМА <span id="topicIndex" class="right-soft">—</span></div><h2 id="currentTopic">Выберите тему слева</h2><p id="currentHint">Первый вопрос определяет учебный маршрут</p><div id="lessonPath" class="lesson-path"></div></section>
+        <section class="progress-card"><div class="section-caption">ПРОГРЕСС СЕССИИ <span class="right-soft">◷</span></div><div class="progress-row"><strong id="countProgress">0 / 2</strong><span id="progressLabel">вопросов</span></div><div class="progress-track"><div class="progress-fill" id="progressBar"></div></div><p id="progressHint">Начните с выбранных тем.</p><div class="footer-buttons"><button id="finishButton" type="button" class="secondary-button" disabled>Завершить</button><button id="forceButton" type="button" class="danger-link" disabled>Завершить досрочно</button></div></section>
+      </div>
+
+      <section class="chat-panel" aria-label="Обучающий чат">
+        <div class="chat-header"><div class="chat-title"><span class="chat-symbol">✦</span><div><strong>Учебный диалог</strong><small>Ответы основаны на полях attributes.def</small></div></div><div class="chat-mode" id="chatMode">Режим: выбор темы</div></div>
+        <div id="messages" class="messages" role="log" aria-live="polite"><div class="empty-state"><div class="empty-icon">✺</div><h3>Начнём с основ</h3><p>Выберите понятия и количество вопросов, затем нажмите «Начать обучение».</p></div></div>
+        <div class="composer-zone"><div id="suggestions" class="suggestions" aria-label="Примеры вопросов"></div><div class="composer"><textarea id="messageInput" rows="2" placeholder="Сначала начните учебную сессию…" disabled aria-label="Ваш вопрос"></textarea><button id="sendButton" type="button" aria-label="Отправить вопрос" disabled>➤</button></div><div class="compose-footer"><span>Enter — отправить · Shift+Enter — новая строка</span><span id="composerStatus">Настройки доступны до старта</span></div><div id="chatError" class="error" role="alert"></div></div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
