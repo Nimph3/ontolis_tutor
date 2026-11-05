@@ -22,7 +22,7 @@ UPLOADS_DIR = BASE_DIR / "data" / "ontologies"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 DEFAULT_ID = "default"
 
-app = FastAPI(title="Онтологический тьютор", version="3.0.0")
+app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="5.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 lock = RLock()
 
@@ -51,7 +51,7 @@ class Session:
     answered: int = 0
     active: bool = True
     reason: str | None = None
-    history: list[dict] = field(default_factory=list)
+    history: list[dict] = field(default_factory=list)  # сообщения вопрос/ответ, доступные для восстановления чата
 
 
 # Исходная онтология сохраняется для совместимости с ранее созданным проектом.
@@ -112,6 +112,7 @@ def info(entry: OntologyEntry) -> dict:
         "nodes": len(g.nodes),
         "relations": len(g.relations),
         "definitions": g.definitions_count,
+        "definition_coverage": round(g.definitions_count / len(g.nodes), 3),
         "unmapped_relations": sum(t["count"] for t in g.relation_types() if t["role"] == "ignore"),
     }
 
@@ -265,6 +266,21 @@ def meta(ontology_id: str = Query(DEFAULT_ID)):
         }
 
 
+@app.get("/api/ontologies/{ontology_id}/quality")
+def ontology_quality(ontology_id: str):
+    with lock:
+        return entry_or_404(ontology_id).graph.quality_report()
+
+
+@app.get("/api/ontologies/{ontology_id}/graph/{node_id}")
+def ontology_subgraph(ontology_id: str, node_id: str, depth: int = Query(1, ge=1, le=2)):
+    with lock:
+        graph = entry_or_404(ontology_id).graph
+        if node_id not in graph.nodes:
+            raise HTTPException(404, "Понятие не найдено в выбранной онтологии.")
+        return graph.subgraph(node_id, depth)
+
+
 @app.post("/api/sessions")
 def new_session(payload: CreateSession):
     with lock:
@@ -292,6 +308,29 @@ def get_session(sid: str):
         return snapshot(sid, s)
 
 
+@app.get("/api/sessions/{sid}/history")
+def session_history(sid: str):
+    with lock:
+        s = sessions.get(sid)
+        if not s:
+            raise HTTPException(404, "Сессия не найдена.")
+        return {"session_id": sid, "items": list(s.history)}
+
+
+def remember(s: Session, question: str, answer: str, result: str,
+             sources: list[dict] | None = None, node_id: str | None = None,
+             traversed_via: dict | None = None) -> None:
+    s.history.extend((
+        {"role": "user", "content": question},
+        {"role": "bot", "content": answer, "result": result,
+         "sources": sources or [], "traversed_via": traversed_via,
+         "answered_node": (
+             {"id": node_id, "name": s.graph.nodes[node_id]["name"]} if node_id else None)},
+    ))
+    if len(s.history) > 300:
+        del s.history[:len(s.history) - 300]
+
+
 @app.post("/api/sessions/{sid}/ask")
 def ask(sid: str, body: AskRequest):
     with lock:
@@ -304,26 +343,22 @@ def ask(sid: str, body: AskRequest):
         question = body.question.strip()
         if len(question) < 2:
             raise HTTPException(422, "Введите вопрос")
-        if not ("?" in question or re.match(r"(?i)^\s*(что|какая|какие|какой|как|из чего|зачем|почему|где|для чего|чем|сколько|расскажи|объясни|назови|можно|имеет|состоит|опиши)\b", question)):
-            raise HTTPException(422, "Сформулируйте вопрос, например: «Что такое нейрон?»")
         choosing = not s.path or s.position >= len(s.path)
         current_id = None if choosing else s.path[s.position].node_id
         matched = g.matched_node(question, current_id, preferred_ids=s.allowed_nodes)
+        if not ("?" in question or re.match(r"(?i)^\s*(что|какая|какие|какой|как|из чего|зачем|почему|где|для чего|чем|сколько|расскажи|объясни|назови|можно|имеет|состоит|опиши|сравни|поясни|расскажи|подскажи)\b", question) or matched):
+            raise HTTPException(422, "Напишите вопрос или название понятия, например: «Что такое нейрон?»")
 
         if choosing:
             if matched is None:
-                return {
-                    "result": "unrecognized",
-                    "answer": "Назовите понятие, с которого хотите начать. Можно выбрать любую отмеченную тему или её подтему. Например: «Что такое …?». Вопрос не засчитан.",
-                    "sources": [], "state": snapshot(sid, s),
-                }
+                answer = "Не удалось однозначно найти понятие. Уточните его название или выберите пример вопроса под чатом. Вопрос не засчитан."
+                remember(s, question, answer, "unrecognized")
+                return {"result": "unrecognized", "answer": answer, "sources": [], "state": snapshot(sid, s)}
             if matched not in s.allowed_nodes:
-                return {
-                    "result": "out_of_scope",
-                    "answer": (f"Понятие «{g.nodes[matched]['name']}» не входит в выбранные темы и их подтемы. "
-                               "Выберите понятие из доступной области. Для смены чекбоксов завершите сессию. Вопрос не засчитан."),
-                    "sources": [], "state": snapshot(sid, s),
-                }
+                answer = (f"Понятие «{g.nodes[matched]['name']}» вне выбранной области. "
+                          "Начните с доступной темы или завершите занятие, чтобы поменять настройки. Вопрос не засчитан.")
+                remember(s, question, answer, "out_of_scope")
+                return {"result": "out_of_scope", "answer": answer, "sources": [], "state": snapshot(sid, s)}
             # Стартовая точка выбрана САМИМ вопросом. DFS вычисляем лишь для неё.
             s.path = [step for step in g.learning_path([matched]) if step.node_id in s.allowed_nodes]
             s.position = 0
@@ -333,24 +368,31 @@ def ask(sid: str, body: AskRequest):
             if matched and matched != current_id:
                 name = g.nodes[matched]["name"]
                 current_name = g.nodes[current_id]["name"]
-                return {
-                    "result": "out_of_order",
-                    "answer": (f"Вы спрашиваете о понятии «{name}», а сейчас по DFS изучаем «{current_name}». "
-                               "Сначала пройдём оставшиеся понятия этой ветки, затем вы сможете "
-                               "выбрать любую следующую точку. Вопрос не засчитан."),
-                    "sources": [], "state": snapshot(sid, s),
-                }
+                # Свободный вопрос вне текущей ветки не меняет учебный маршрут.
+                future_steps = {p.node_id for p in s.path[s.position + 1:]}
+                if (matched in s.allowed_nodes and matched not in future_steps
+                    and matched not in {p.node_id for p in s.path[:s.position]}
+                    and current_id not in {p.node_id for p in g.learning_path([matched])}):
+                    aside_answer, sources = g.response(matched, question)
+                    answer = ("Дополнительный вопрос (без перехода на другую тему).\n\n"
+                              + aside_answer + f"\n\nПродолжение занятия: «{current_name}».")
+                    remember(s, question, answer, "aside", sources, matched)
+                    return {"result": "aside", "answer": answer, "sources": sources,
+                            "answered_node": {"id": matched, "name": name}, "state": snapshot(sid, s)}
+                answer = (f"Вы спросили о понятии «{name}». Сейчас изучаем «{current_name}». "
+                          "До него мы дойдём по маршруту. Сейчас спросите о текущем понятии; вопрос не засчитан.")
+                remember(s, question, answer, "out_of_order")
+                return {"result": "out_of_order", "answer": answer, "sources": [], "state": snapshot(sid, s)}
             if matched is None and not g.is_contextual_question(question, current_id):
-                return {
-                    "result": "unrecognized",
-                    "answer": ("Не удалось сопоставить вопрос с текущим понятием. Назовите его полностью "
-                               "или выберите предложенный вопрос. Вопрос не засчитан."),
-                    "sources": [], "state": snapshot(sid, s),
-                }
+                answer = ("Не удалось связать вопрос с текущим понятием. Попробуйте указать его название "
+                          "или нажмите на пример вопроса. Вопрос не засчитан.")
+                remember(s, question, answer, "unrecognized")
+                return {"result": "unrecognized", "answer": answer, "sources": [], "state": snapshot(sid, s)}
 
         step = s.path[s.position]
         answer, sources = g.response(current_id, question)
-        s.history.append({"question": question, "node_id": current_id, "answer": answer})
+        via = g.describe_relation(g.relations[step.via_relation_id]) if step.via_relation_id else None
+        remember(s, question, answer, "answered", sources, current_id, via)
         s.answered += 1
         s.position += 1
         finished_branch = s.position == len(s.path)
@@ -361,7 +403,7 @@ def ask(sid: str, body: AskRequest):
             "result": "answered",
             "answer": answer,
             "answered_node": {"id": current_id, "name": g.nodes[current_id]["name"]},
-            "traversed_via": g.describe_relation(g.relations[step.via_relation_id]) if step.via_relation_id else None,
+            "traversed_via": via,
             "branch_completed": finished_branch,
             "sources": sources,
             "state": state,
