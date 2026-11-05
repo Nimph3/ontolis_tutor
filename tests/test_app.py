@@ -36,7 +36,7 @@ def test_def_and_relation_trace():
     assert response.status_code==200
     result=response.json()
     assert result['result']=='answered'
-    assert 'Математическая модель' in result['answer']
+    assert 'математическая модель' in result['answer']
     assert 'Слой нейронов' in result['answer']
     assert result['sources'][0]=={'node_id':'49','field':'attributes.def'}
     assert any(x.get('relation',{}).get('id')=='66' for x in result['sources'])
@@ -91,7 +91,7 @@ def test_invalid_user_input():
 
 def test_home_and_frontend():
     assert client.get('/').status_code==200
-    assert 'Онтологический тьютор' in client.get('/').text
+    assert 'OntoTutor — интерактивная обучающая система на основе графа знаний' in client.get('/').text
     assert client.get('/static/app.js').status_code==200
 
 

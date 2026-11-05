@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Онтологический тьютор · OntoTutor</title>
+  <title>OntoTutor — интерактивная обучающая система</title>
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
@@ -31,7 +31,7 @@
         </section>
         <div class="sidebar-header"><span class="eyebrow">НАСТРОЙКИ ОБУЧЕНИЯ</span><span id="lockLabel" class="lock-label">Доступны</span></div>
         <h2>Что изучаем?</h2>
-        <p class="hint">Отметьте доступные темы. С какого понятия начать, решите первым вопросом в чате. Затем пройдём его ветку по DFS, и снова можно будет выбрать тему.</p>
+        <p class="hint">Отметьте доступные темы. С какого понятия начать, решите первым вопросом в чате. Затем будем изучать связанные понятия по учебному маршруту.</p>
         <label class="field-label" for="searchTopics">Поиск понятий</label>
         <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchTopics" type="search" placeholder="Например, нейрон…" autocomplete="off"></div>
         <div class="topic-actions"><button id="allTopics" type="button" class="text-action">Выбрать все</button><button id="clearTopics" type="button" class="text-action">Снять все</button><span id="selectedCount">0 выбрано</span></div>
@@ -47,19 +47,55 @@
     </aside>
 
     <main class="workspace">
-      <header class="topbar"><div class="top-title"><span class="eyebrow">ИНТЕРАКТИВНЫЙ КУРС</span><h1>Диалог с графом знаний</h1></div><span id="sessionBadge" class="session-badge">Сессия не начата</span></header>
+      <header class="topbar"><div class="top-title"><span class="eyebrow">ИНТЕРАКТИВНЫЙ КУРС</span><h1 title="OntoTutor — интерактивная обучающая система на основе графа знаний">OntoTutor — интерактивная обучающая система на основе графа знаний</h1></div>
+        <div class="top-actions"><button type="button" id="helpButton" class="top-tool" title="Инструкция по работе">ⓘ Справка</button><button type="button" id="qualityButton" class="top-tool" title="Проверить полноту онтологии">✓ Качество</button><span id="sessionBadge" class="session-badge">Сессия не начата</span></div></header>
+      <div id="liveStatus" class="live-status" role="status" aria-live="polite">
+        <span><b>Режим:</b> <span id="statusMode">Настройка</span></span>
+        <span><b>Тема:</b> <span id="statusTopic">Не выбрана</span></span>
+        <span><b>Вопрос:</b> <span id="statusStep">—</span></span>
+        <span class="live-status-action" id="statusAction">Выберите темы и начните занятие</span>
+      </div>
 
       <div class="overview">
-        <section class="current-card" aria-live="polite"><div class="section-caption"><span class="card-icon">◈</span> ТЕКУЩАЯ ТЕМА <span id="topicIndex" class="right-soft">—</span></div><h2 id="currentTopic">Выберите тему слева</h2><p id="currentHint">Первый вопрос определяет учебный маршрут</p><div id="lessonPath" class="lesson-path"></div></section>
+        <section class="current-card" aria-live="polite"><div class="section-caption"><span class="card-icon">◈</span> ТЕКУЩАЯ ТЕМА <span id="topicIndex" class="right-soft">—</span></div><h2 id="currentTopic">Выберите тему слева</h2><p id="currentHint">Первый вопрос определяет учебный маршрут</p><div id="lessonPath" class="lesson-path"></div><button id="graphButton" type="button" class="graph-launch">◉ Посмотреть граф связей</button></section>
         <section class="progress-card"><div class="section-caption">ПРОГРЕСС СЕССИИ <span class="right-soft">◷</span></div><div class="progress-row"><strong id="countProgress">0 / 2</strong><span id="progressLabel">вопросов</span></div><div class="progress-track"><div class="progress-fill" id="progressBar"></div></div><p id="progressHint">Начните с выбранных тем.</p><div class="footer-buttons"><button id="finishButton" type="button" class="secondary-button" disabled>Завершить</button><button id="forceButton" type="button" class="danger-link" disabled>Завершить досрочно</button></div></section>
       </div>
 
       <section class="chat-panel" aria-label="Обучающий чат">
-        <div class="chat-header"><div class="chat-title"><span class="chat-symbol">✦</span><div><strong>Учебный диалог</strong><small>Ответы основаны на полях attributes.def</small></div></div><div class="chat-mode" id="chatMode">Режим: выбор темы</div></div>
+        <div class="chat-header"><div class="chat-title"><span class="chat-symbol">✦</span><div><strong>Учебный диалог</strong><small>Объяснения и связи из выбранной онтологии</small></div></div><div class="chat-mode" id="chatMode">Режим: выбор темы</div></div>
         <div id="messages" class="messages" role="log" aria-live="polite"><div class="empty-state"><div class="empty-icon">✺</div><h3>Начнём с основ</h3><p>Выберите понятия и количество вопросов, затем нажмите «Начать обучение».</p></div></div>
         <div class="composer-zone"><div id="suggestions" class="suggestions" aria-label="Примеры вопросов"></div><div class="composer"><textarea id="messageInput" rows="2" placeholder="Сначала начните учебную сессию…" disabled aria-label="Ваш вопрос"></textarea><button id="sendButton" type="button" aria-label="Отправить вопрос" disabled>➤</button></div><div class="compose-footer"><span>Enter — отправить · Shift+Enter — новая строка</span><span id="composerStatus">Настройки доступны до старта</span></div><div id="chatError" class="error" role="alert"></div></div>
       </section>
     </main>
   </div>
+
+  <dialog id="graphDialog" class="modal graph-modal" aria-labelledby="graphTitle">
+    <div class="modal-head"><div><span class="eyebrow">ИНТЕРАКТИВНАЯ ОНТОЛОГИЯ</span><h2 id="graphTitle">Связи понятия</h2><p id="graphSummary">Выберите узел на схеме, чтобы увидеть его определение.</p></div><button class="modal-close" id="closeGraph" type="button" aria-label="Закрыть граф">×</button></div>
+    <div class="graph-toolbar"><label>Глубина: <select id="graphDepth"><option value="1">1 уровень</option><option value="2">2 уровня</option></select></label><span class="graph-zoom" aria-label="Масштаб схемы"><button type="button" id="graphZoomOut" title="Уменьшить">−</button><button type="button" id="graphZoomIn" title="Увеличить">+</button><button type="button" id="graphFit" title="Показать всё">⤢</button></span><span id="graphLegend">Название отношения — над стрелкой</span></div>
+    <div class="graph-layout">
+      <div class="graph-canvas"><svg id="graphSvg" viewBox="0 0 930 470" role="img" aria-label="Подграф понятий и их связей"></svg></div>
+      <div class="graph-detail" id="graphDetail">Нажмите на овал, чтобы увидеть определение.</div>
+    </div>
+  </dialog>
+
+  <dialog id="helpDialog" class="modal help-modal" aria-labelledby="helpTitle">
+    <div class="modal-head"><div><span class="eyebrow">НАЧАЛО РАБОТЫ</span><h2 id="helpTitle">Как пользоваться OntoTutor</h2><p>Изучайте понятия и отношения между ними в выбранном графе знаний.</p></div><button class="modal-close" id="closeHelp" type="button" aria-label="Закрыть справку">×</button></div>
+    <ol class="help-steps">
+      <li><strong>Выберите область знаний.</strong> Используйте список слева или загрузите свой экспорт ONTOLIS (.ont).</li>
+      <li><strong>Отметьте темы.</strong> Можно выбрать одну или несколько; укажите минимальное число вопросов.</li>
+      <li><strong>Начните занятие.</strong> Спросите о любом выбранном понятии. Программа предложит учебный маршрут.</li>
+      <li><strong>Спрашивайте своими словами.</strong> Например, «Что это?», «Для чего используется?» или «Какие части есть?». Если вопрос не распознан, уточните формулировку или используйте подсказку.</li>
+      <li><strong>Посмотрите связи.</strong> Нажмите «Посмотреть граф связей» или кнопку под ответом. Клик по узлу откроет его определение.</li>
+      <li><strong>Завершите занятие.</strong> Кнопка «Завершить» становится доступной после заданного минимума. «Завершить досрочно» доступна всегда.</li>
+    </ol>
+    <p class="help-note">Ответы строятся из сведений онтологии, а не из свободных предположений. Если данных не хватает, приложение сообщит об этом.</p>
+    <button id="gotItButton" type="button" class="primary-button">Понятно, начать работу</button>
+  </dialog>
+
+  <dialog id="qualityDialog" class="modal help-modal" aria-labelledby="qualityTitle">
+    <div class="modal-head"><div><span class="eyebrow">ПРОВЕРКА ДАННЫХ</span><h2 id="qualityTitle">Качество графа знаний</h2><p>Проверка заполненности и структуры связей.</p></div><button class="modal-close" type="button" id="closeQuality" aria-label="Закрыть проверку">×</button></div>
+    <div id="qualityContent" class="quality-content">Загрузка данных…</div>
+    <p class="help-note">Проверка выявляет структурные проблемы. Она не доказывает логическую непротиворечивость всех утверждений.</p>
+  </dialog>
 </body>
 </html>

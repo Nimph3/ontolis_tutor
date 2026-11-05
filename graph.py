@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import unicodedata
+from question_processing import SYNONYMS, detect_intent, phrase_score, aliases, normalize as normalize_query
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,14 @@ class Ontology:
             attrs = item.get("attributes") or {}
             if not isinstance(attrs, dict):
                 raise ValueError(f"У понятия «{name}» поле attributes должно быть объектом.")
+            # Нормализуем лишь внутреннее представление: файл ONTOLIS не меняем.
+            attrs = dict(attrs)
+            def_key = next((key for key in ("def", "Определение", "определение", "definition", "Definition", "Описание", "description")
+                            if str(attrs.get(key) or "").strip()), None)
+            if def_key and def_key != "def":
+                attrs["def"] = str(attrs[def_key]).strip()
             node = dict(item, id=nid, name=name.strip(), attributes=attrs)
+            node["_definition_source"] = f"attributes.{def_key}" if def_key else "attributes.def"
             self.nodes[nid] = node
 
         self.relations: dict[str, dict] = {}
@@ -145,7 +153,7 @@ class Ontology:
     def relation_kind(self, relation: dict) -> str:
         """Сопоставляем название связи выбранной онтологии с понятной программе ролью."""
         name = relation["name"]
-        return self.relation_mapping.get(name, name if name in (*TEACHING_EDGES.keys(), "same_as") else "ignore")
+        return self.relation_mapping.get(name, "used_for" if name == "use_for" else name if name in (*TEACHING_EDGES.keys(), "same_as") else "ignore")
 
     def relation_types(self) -> list[dict]:
         counts = defaultdict(int)
@@ -258,6 +266,12 @@ class Ontology:
             if current_id in ties:
                 return current_id
             return sorted(ties, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))[0]
+        # Контролируемый fallback: алиасы, синонимы и небольшие опечатки.
+        matches = self.matched_concepts(question, preferred_ids=preferred_ids)
+        if matches:
+            best = matches[0]["score"]
+            ties = [m["id"] for m in matches if m["score"] == best]
+            return choose(ties)
         return None
 
     def is_contextual_question(self, question: str, current_id: str) -> bool:
@@ -274,7 +288,7 @@ class Ontology:
             "включены", "связи", "связано", "связаны", "понятие", "тема", "разновидности",
             "виды", "части", "компоненты", "какая", "назначение", "расскажи", "объясни",
             "опиши", "назови", "входные", "выходные", "данные", "результат", "имеет",
-            "работает", "он", "она", "они", "его", "ее", "этого", "этой", "этот",
+            "работает", "решает", "задачи", "помогает", "применить", "пример", "на практике", "применяют", "он", "она", "они", "его", "ее", "этого", "этой", "этот",
         )}
         stemmed_name = {word_stem(w) for w in normalize(self.nodes[current_id]["name"]).split()}
         content = [t for t in terms if len(t) >= 3 and t not in grammar and t not in stemmed_name]
@@ -291,51 +305,211 @@ class Ontology:
             "destination": self.nodes[r["destination_node_id"]]["name"],
         }
 
-    def response(self, node_id: str, question: str) -> tuple[str, list[dict]]:
-        node = self.nodes[node_id]
-        source = [{"node_id": node_id, "field": "attributes.def"}]
-        definition = str(node.get("attributes", {}).get("def", "")).strip()
-        if not definition:
-            definition = f"В онтологии пока не заполнено определение понятия «{node['name']}»."
-        low = normalize(question)
-        categories = []
-        if any(k in low for k in ("состоит", "част", "компонент", "включа", "содержит")):
-            categories = [("Состав", self.neighborhood(node_id, {"has"}, "out") + self.neighborhood(node_id, {"a_part_of"}, "in"))]
-        elif any(k in low for k in ("вид", "разновид", "пример", "подтип")):
-            categories = [("Виды и экземпляры", self.neighborhood(node_id, {"is_a", "is_instance"}, "in"))]
-        elif any(k in low for k in ("зачем", "назнач", "для чего", "использ", "примен")):
-            categories = [("Применение", self.neighborhood(node_id, {"used_for", "use"}, "out"))]
-        elif any(k in low for k in ("вход", "ввод", "подается", "получает")):
-            categories = [("Входные данные", self.neighborhood(node_id, {"input"}, "in"))]
-        elif any(k in low for k in ("выход", "результат", "возвращает", "выдает")):
-            categories = [("Выходные данные", self.neighborhood(node_id, {"output"}, "out"))]
-        elif any(k in low for k in ("связан", "связи", "отношен")):
-            categories = [("Связи", self.neighborhood(node_id, {"a_part_of", "is_a", "is_instance", "has", "use", "used_for", "input", "output", "same_as"}, "both"))]
+    def matched_concepts(self, question: str, preferred_ids: set[str] | None = None,
+                         limit: int = 4) -> list[dict]:
+        """Список кандидатов с оценкой релевантности; исключает ненадёжные совпадения."""
+        found = []
+        q = normalize_query(question)
+        for nid, node in self.nodes.items():
+            terms = [node["name"]]
+            for key in ("aliases", "synonyms", "Синонимы", "Алиасы", "Краткое название"):
+                terms += aliases(node["attributes"].get(key))
+            for short, fulls in SYNONYMS.items():
+                if normalize_query(node["name"]) in [normalize_query(v) for v in fulls]:
+                    terms.append(short)
+            score = max(phrase_score(q, term) for term in terms)
+            if score >= .7:
+                found.append({"id": nid, "name": node["name"], "score": round(score, 2)})
+        found.sort(key=lambda item: (-item["score"],
+                   -(len(normalize_query(item["name"]).split())),
+                   0 if preferred_ids and item["id"] in preferred_ids else 1,
+                   item["id"]))
+        # Не выдаём одинаковое название несколько раз без необходимости.
+        unique = []
+        seen_names = set()
+        for item in found:
+            name = normalize_query(item["name"])
+            if name in seen_names:
+                continue
+            unique.append(item)
+            seen_names.add(name)
+            if len(unique) >= limit:
+                break
+        return unique
 
-        details = []
-        for label, items in categories:
-            unique = {}
-            for neighbor_id, relation in items:
-                unique[relation["id"]] = (neighbor_id, relation)
-            if unique:
-                names = [f"«{self.nodes[neighbor_id]['name']}»" for neighbor_id, relation in unique.values()]
-                details.append(f"{label}: " + "; ".join(names) + ".")
-                for neighbor_id, relation in unique.values():
-                    source.append({"relation": self.describe_relation(relation), "node_id": neighbor_id, "field": "name"})
+    def subgraph(self, node_id: str, depth: int = 1, limit: int = 13) -> dict:
+        """Ограниченный подграф с направлениями рёбер для отдельного окна."""
+        if node_id not in self.nodes:
+            raise KeyError(node_id)
+        depth = max(1, min(depth, 2))
+        visited, frontier = {node_id}, {node_id}
+        for _ in range(depth):
+            next_layer = set()
+            for nid in sorted(frontier):
+                for neighbor, relation in self.neighborhood(
+                    nid, set(TEACHING_EDGES) | {"same_as", "ignore"}, "both"
+                ):
+                    if neighbor not in visited and len(visited) + len(next_layer) < limit:
+                        next_layer.add(neighbor)
+            visited.update(next_layer)
+            frontier = next_layer
+            if not frontier:
+                break
+        # Нестандартные отношения тоже показываем: визуализация != учебный DFS.
+        edge_items = [r for r in self.relations.values()
+                      if r["source_node_id"] in visited and r["destination_node_id"] in visited]
+        return {
+            "center_id": node_id,
+            "nodes": [{"id": nid, "name": self.nodes[nid]["name"],
+                       "definition": self.nodes[nid]["attributes"].get("def", "")}
+                      for nid in sorted(visited)],
+            "edges": [self.describe_relation(r) for r in edge_items[:100]],
+            "truncated": len(edge_items) > 100 or len(visited) >= limit,
+        }
+
+    def quality_report(self) -> dict:
+        from collections import Counter
+        names = Counter(normalize_query(n["name"]) for n in self.nodes.values())
+        duplicates = [n["name"] for n in self.nodes.values() if names[normalize_query(n["name"])] > 1]
+        empty = [n["name"] for n in self.nodes.values() if not n["attributes"].get("def")]
+        unnamed = [r["id"] for r in self.relations.values() if not r["name"].strip()]
+        unmapped = [r["id"] for r in self.relations.values() if self.relation_kind(r) == "ignore"]
+        # Простая проверка циклов в «является видом» (не полноценный OWL-reasoner).
+        parents = defaultdict(list)
+        for r in self.relations.values():
+            if self.relation_kind(r) == "is_a":
+                parents[r["source_node_id"]].append(r["destination_node_id"])
+        cycles = []
+        checked = set()
+        def visit(nid, path):
+            if nid in path:
+                cycles.append(path[path.index(nid):] + [nid]); return
+            if nid in checked:
+                return
+            checked.add(nid)
+            for parent in parents[nid]:
+                visit(parent, path + [nid])
+        for nid in self.nodes:
+            visit(nid, [])
+        total = len(self.nodes)
+        return {"nodes": total, "relations": len(self.relations),
+                "definitions_count": self.definitions_count,
+                "definition_coverage": round(self.definitions_count / total, 3),
+                "missing_definitions": empty,
+                "duplicate_names": sorted(set(duplicates)),
+                "unnamed_relation_ids": unnamed,
+                "unnamed_relation_details": [self.describe_relation(r) for r in self.relations.values()
+                                             if not r["name"].strip()],
+                "unmapped_relation_ids": unmapped,
+                "is_a_cycles": cycles,
+                "note": "Структурные проверки; логическая непротиворечивость формальных аксиом отдельно не доказана."}
+
+    @staticmethod
+    def definition_text(node: dict) -> str:
+        """Не дублировать «Нейрон — Нейрон - это ...» в учебном ответе."""
+        definition = str(node["attributes"].get("def", "")).strip()
+        if not definition:
+            return f"В онтологии пока не заполнено определение понятия «{node['name']}»."
+        prefix = rf"^\s*{re.escape(node['name'])}\s*[-—:]\s*(?:это\s+)?"
+        shorter = re.sub(prefix, "", definition, count=1, flags=re.IGNORECASE)
+        if shorter != definition:
+            definition = shorter
+        elif definition.casefold().startswith('это '):
+            definition = definition[4:]
+        return definition
+
+    def response(self, node_id: str, question: str) -> tuple[str, list[dict]]:
+        """Определения -> ответ на намерение -> связанные понятия, только из графа."""
+        node = self.nodes[node_id]
+        source = [{"node_id": node_id, "field": node["_definition_source"]}]
+        definition = self.definition_text(node)
+        intent = detect_intent(question)
+        # Два явных понятия -> предварительно объясняем оба.
+        matches = self.matched_concepts(question, limit=6)
+        comparisons = [candidate for candidate in matches if candidate["id"] != node_id
+                       and normalize_query(candidate["name"]) != normalize_query(node["name"])]
+        parts = [f"Определение: {node['name']} — {definition}" if node["attributes"].get("def")
+                 else definition]
+        if intent == "compare" and comparisons:
+            second_id = comparisons[0]["id"]
+            second = self.nodes[second_id]
+            second_def = self.definition_text(second)
+            parts.append(f"Определение второго понятия: {second['name']} — {second_def}")
+            source.append({"node_id": second_id, "field": second["_definition_source"]})
+            connected = [r for r in self.outgoing[node_id] + self.incoming[node_id]
+                         if second_id in (r["source_node_id"], r["destination_node_id"])]
+            if connected:
+                parts.append("Связь между понятиями: " + "; ".join(
+                    f"{self.describe_relation(r)['source']} — {r['name'] or 'связано с'} → {self.describe_relation(r)['destination']}"
+                    for r in connected[:3]) + ".")
+                source.extend({"relation": self.describe_relation(r), "node_id": second_id, "field": "name"}
+                              for r in connected[:3])
             else:
-                details.append(f"{label}: в онтологии соответствующие связи не заданы.")
-        return "\n\n".join([definition] + details), source
+                parts.append("Прямое сравнительное отношение в графе не задано. Сравните определения выше: система не придумывает различия, отсутствующие в онтологии.")
+            return "\n\n".join(parts), source
+
+        kinds = {
+            "composition": ("Состав", {"has"}, "out", {"a_part_of"}, "in"),
+            "types": ("Виды и экземпляры", {"is_a", "is_instance"}, "in", set(), "out"),
+            "purpose": ("Назначение и применение", {"used_for", "use"}, "out", set(), "out"),
+            "input": ("Входные данные", {"input"}, "in", set(), "out"),
+            "output": ("Выходные данные", {"output"}, "out", set(), "out"),
+            "relations": ("Связи", set(TEACHING_EDGES) | {"same_as"}, "both", set(), "out"),
+            "operation": ("Связанные механизмы", {"use", "has", "input", "output"}, "both", set(), "out"),
+        }
+        def add_relations(label, items):
+            used = set()
+            filtered = []
+            for neighbor_id, relation in items:
+                if relation["id"] not in used:
+                    used.add(relation["id"])
+                    filtered.append((neighbor_id, relation))
+            if filtered:
+                parts.append(label + ": " + "; ".join(
+                    f"{self.nodes[nid]['name']} ({relation['name'] or 'связь'})"
+                    for nid, relation in filtered[:8]) + ".")
+                for nid, relation in filtered[:8]:
+                    source.append({"relation": self.describe_relation(relation), "node_id": nid, "field": "name"})
+        if intent in kinds:
+            label, types, direction, types2, direction2 = kinds[intent]
+            relevant = self.neighborhood(node_id, types, direction) + self.neighborhood(node_id, types2, direction2)
+            # До объяснения связи определяем до трёх дополнительных терминов,
+            # чтобы ответ был пригоден для обучения без предварительной подготовки.
+            related_defs = []
+            seen_definitions = set()
+            for related_id, _relation in relevant:
+                if related_id not in seen_definitions and related_id != node_id:
+                    seen_definitions.add(related_id)
+                    related_node = self.nodes[related_id]
+                    if related_node["attributes"].get("def"):
+                        related_defs.append(f"{related_node['name']} — {self.definition_text(related_node)}")
+                        source.append({"node_id": related_id, "field": related_node["_definition_source"]})
+                if len(related_defs) >= 3:
+                    break
+            if related_defs:
+                parts.append("Определения связанных понятий:\n" + "\n".join(related_defs))
+            add_relations(label, relevant)
+        else:
+            # Даже определение дополняется назначением и контекстом, но только из графа.
+            applications = self.neighborhood(node_id, {"used_for", "use"}, "out")
+            if applications:
+                add_relations("Назначение и применение", applications[:4])
+            related = self.neighborhood(node_id, set(TEACHING_EDGES), "both")
+            if related:
+                add_relations("Связанные понятия", related[:5])
+        return "\n\n".join(parts), source
 
     def suggested_questions(self, node_id: str) -> list[str]:
         name = self.nodes[node_id]["name"]
-        choices = [f"Что такое {name}?", f"Какие связи есть у понятия «{name}»?"]
+        choices = [f"Что такое {name}?"]
         if self.neighborhood(node_id, {"has"}, "out") or self.neighborhood(node_id, {"a_part_of"}, "in"):
-            choices.insert(1, f"Из чего состоит {name}?")
-        elif self.neighborhood(node_id, {"used_for", "use"}, "out"):
-            choices.insert(1, f"Для чего используется {name}?")
-        elif self.neighborhood(node_id, {"is_a", "is_instance"}, "in"):
-            choices.insert(1, f"Какие виды есть у понятия «{name}»?")
-        return choices[:3]
+            choices.append(f"Из чего состоит {name}?")
+        if self.neighborhood(node_id, {"used_for", "use"}, "out"):
+            choices.append(f"Для чего используется {name}?")
+        if self.neighborhood(node_id, {"is_a", "is_instance"}, "in"):
+            choices.append(f"Какие виды есть у понятия «{name}»?")
+        choices.append(f"Какие связи есть у понятия «{name}»?")
+        return choices[:4]
 
     def available_topics(self) -> list[dict]:
         result = []
