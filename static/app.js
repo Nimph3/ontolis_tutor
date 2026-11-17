@@ -25,7 +25,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 function setError(message, id = 'sidebarError') { $(id).textContent = message || ''; }
 function lockSettings(active) {
   const locked = Boolean(active);
-  for (const id of ['questionCount', 'searchTopics', 'allTopics', 'clearTopics', 'ontologySelect', 'uploadButton', 'ontologyFile', 'saveRelations']) {
+  for (const id of ['questionCount', 'studyDepth', 'questionCategory', 'searchTopics', 'allTopics', 'clearTopics', 'ontologySelect', 'uploadButton', 'ontologyFile', 'saveRelations']) {
     $(id).disabled = locked;
   }
   $('startButton').disabled = locked;
@@ -88,12 +88,27 @@ function showMessage(role, content, result = null) {
   caption.textContent = role === 'user' ? 'Вы' : result?.result === 'out_of_order' ? 'Подсказка по порядку' : result?.result === 'out_of_scope' ? 'Тема вне выбранной области' : 'OntoTutor · онтология';
   const bubble = document.createElement('div'); bubble.className = 'message-bubble'; bubble.textContent = content;
   outer.append(caption, bubble);
-  if (role === 'bot' && ['answered', 'aside'].includes(result?.result) && result?.answered_node?.id) {
+  if (role === 'bot' && ['answered', 'aside', 'out_of_scope'].includes(result?.result) && result?.answered_node?.id) {
     const graphLink = document.createElement('button');
     graphLink.type = 'button'; graphLink.className = 'graph-answer-link';
     graphLink.textContent = 'Посмотреть связи понятия';
     graphLink.addEventListener('click', () => openGraph(result.answered_node.id));
     outer.append(graphLink);
+  }
+  // Предлагаем варианты прямо в чате, не меняя общий дизайн.
+  if (role === 'bot' && Array.isArray(result?.alternatives) && result.alternatives.length) {
+    const variants = document.createElement('div'); variants.className = 'suggestions';
+    result.alternatives.slice(0, 4).forEach(candidate => {
+      const button = document.createElement('button'); button.type = 'button';
+      button.className = 'suggestion'; button.textContent = candidate.name;
+      button.title = `Спросить об этом понятии (сходство ${Math.round(candidate.score * 100)}%)`;
+      button.addEventListener('click', () => {
+        $('messageInput').value = `Что такое ${candidate.name}?`;
+        $('messageInput').focus();
+      });
+      variants.append(button);
+    });
+    outer.append(variants);
   }
   $('messages').append(outer);
   $('messages').scrollTop = $('messages').scrollHeight;
@@ -101,6 +116,8 @@ function showMessage(role, content, result = null) {
 function addLi(list, value) { const item = document.createElement('li'); item.textContent = value; list.append(item); }
 function displayState(state) {
   currentSession = state;
+  if ($('studyDepth') && typeof state.search_depth !== 'undefined') $('studyDepth').value = String(state.search_depth);
+  if ($('questionCategory') && state.question_category) $('questionCategory').value = state.question_category;
   const picking = state.mode === 'choose_start';
   lockSettings(state.active);
   $('sessionBadge').textContent = state.active ? '● Сессия активна' : state.reason === 'forced' ? 'Сессия прервана' : '✓ Сессия завершена';
@@ -296,7 +313,8 @@ async function start() {
   try {
     $('startButton').disabled = true;
     const data = await callApi('/api/sessions', 'POST', {
-      ontology_id: currentOntologyId, selected_topics: [...selected], question_count: count
+      ontology_id: currentOntologyId, selected_topics: [...selected], question_count: count,
+      search_depth: Number($('studyDepth').value), question_category: $('questionCategory').value
     });
     localStorage.setItem('ontotutor_session_id', data.session_id);
     $('messages').replaceChildren(); displayState(data);
@@ -473,13 +491,24 @@ function layoutGraph(graph) {
       placed += take; row++;
     }
   });
+  // Золотой угол и растущий радиус не накладывают узлы при режиме «Все».
   orphans.forEach((n, i) => {
-    const a = Math.PI + i * 0.6; n.angle = a;
-    n.x = Math.cos(a) * (R1 + 220) * ASPECT; n.y = Math.sin(a) * (R1 + 220);
+    const a = Math.PI + i * 2.399963229728653;
+    const radius = R1 + 150 + Math.sqrt(i) * 96;
+    n.angle = a;
+    n.x = Math.cos(a) * radius * ASPECT;
+    n.y = Math.sin(a) * radius;
   });
 
-  // 4. Только разведение пересечений: положение узлов дерева почти не меняется.
-  for (let step = 0; step < 260; step++) {
+  // 4. Для полного графа используем ускоренную раскладку без квадратичного
+  // разведения (иначе сотни узлов блокируют браузер).
+  if (nodes.length > 100) {
+    const columns = Math.ceil(Math.sqrt(nodes.length * 1.9));
+    nodes.forEach((n, i) => { if (n.id !== centerId) { n.x = (i % columns) * 235; n.y = Math.floor(i / columns) * 95; } });
+    center.x = -260; center.y = 0;
+    return {nodes, byId, links};
+  }
+  for (let step = 0; step < (nodes.length > 55 ? 12 : 260); step++) {
     let moved = false;
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
@@ -512,6 +541,7 @@ function routeEdges(layout) {
     const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
     const nx = -dy / len, ny = dx / len;
     const blocked = (off) => {
+      if (nodes.length > 60) return false;
       const cx = mx + nx * off, cy = my + ny * off;
       for (let t = 0.12; t <= 0.88; t += 0.04) {
         const x = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * cx + t * t * b.x;
@@ -554,9 +584,13 @@ function placeLabels(routes, nodes) {
     const shown = text.length > 19 ? `${text.slice(0, 18)}…` : text;
     const w = Math.max(34, shown.length * 7 + 16);
     let best = null;
-    for (const t of [0.5, 0.4, 0.6, 0.32, 0.68, 0.25, 0.75, 0.18, 0.82]) {
-      const [x, y] = pointOnCurve(r, t);
-      if (!overlaps(x, y, w)) { best = [x, y]; break; }
+    if (nodes.length > 100 || routes.length > 300) {
+      best = pointOnCurve(r, 0.5);
+    } else {
+      for (const t of [0.5, 0.4, 0.6, 0.32, 0.68, 0.25, 0.75, 0.18, 0.82]) {
+        const [x, y] = pointOnCurve(r, t);
+        if (!overlaps(x, y, w)) { best = [x, y]; break; }
+      }
     }
     if (!best) best = pointOnCurve(r, 0.5);
     placed.push({x1: best[0] - w / 2 - 3, x2: best[0] + w / 2 + 3, y1: best[1] - 12, y2: best[1] + 12});

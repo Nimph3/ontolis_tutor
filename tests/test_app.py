@@ -15,8 +15,8 @@ def test_source_data():
     m=client.get('/api/meta').json()
     assert m['nodes']==54 and m['relations']==99
     assert len(m['topics'])==54
-    assert ontology.nodes['64']['attributes']['def'].startswith('Нейрон - это')
-    assert all('def' in node['attributes'] for node in ontology.nodes.values())
+    assert ontology.nodes['64']['attributes']['def'].startswith('Нейрон — это')
+    assert sum(bool(node['attributes'].get('def')) for node in ontology.nodes.values()) == 53
 
 
 def test_order_is_depth_first_and_reverse_part_of():
@@ -38,7 +38,7 @@ def test_def_and_relation_trace():
     assert result['result']=='answered'
     assert 'математическая модель' in result['answer']
     assert 'Слой нейронов' in result['answer']
-    assert result['sources'][0]=={'node_id':'49','field':'attributes.def'}
+    assert result['sources'][0]=={'node_id':'49','field':'attributes.definition'}
     assert any(x.get('relation',{}).get('id')=='66' for x in result['sources'])
     assert result['state']['questions_answered']==1
 

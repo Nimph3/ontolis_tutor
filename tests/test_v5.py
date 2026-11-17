@@ -15,12 +15,12 @@ def test_function_activation_has_identical_requested_definitions():
     raw = json.loads((Path(__file__).resolve().parents[1] / 'data' / 'ontology.ont').read_text('utf-8'))
     stored = [n for n in raw['nodes'] if str(n['id']) in {'65', '208'}]
     assert len(stored) == 2
-    assert all(n['attributes']['def'] == target for n in stored)
+    assert all(n['attributes']['definition'] == target for n in stored)
 
 
 def test_definitions_have_lowercase_after_dash_or_eto():
     for node in ontology.nodes.values():
-        definition = node['attributes']['def']
+        definition = node['attributes'].get('def', '')
         assert not re.search(r'(?:\bэто\s+|\s[—–-]\s+)[А-ЯЁ][а-яё]+', definition)
 
 
@@ -32,13 +32,12 @@ def test_no_unwanted_purpose_message_for_definition():
     assert 'В онтологии не указано, какие задачи' not in purpose
 
 
-def test_unnamed_relations_are_explained_with_endpoints():
+def test_input_relations_have_their_confirmed_type():
     data = client.get('/api/ontologies/default/quality').json()
-    assert set(data['unnamed_relation_ids']) == {'231', '236'}
-    assert set(data['unmapped_relation_ids']) == {'231', '236'}
-    assert {r['id'] for r in data['unnamed_relation_details']} == {'231', '236'}
-    assert all(r['source'] == 'Скорость обучения' for r in data['unnamed_relation_details'])
-    assert any('Классификация чисел' in r['destination'] for r in data['unnamed_relation_details'])
+    assert data['unnamed_relation_ids'] == []
+    assert data['unmapped_relation_ids'] == []
+    for ident in ('231', '236'):
+        assert ontology.relations[ident]['name'] == 'input'
 
 
 def test_updated_ui_and_graph_implementation():

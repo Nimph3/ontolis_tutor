@@ -1,2 +1,3 @@
--r requirements.txt
-pymorphy3>=2.0.2,<3
+# Необязательная функциональность: локальная нейросетевая модель эмбеддингов.
+# Требует отдельного скачивания весов и заданного ONTOTUTOR_EMBEDDING_MODEL.
+sentence-transformers>=3,<6
