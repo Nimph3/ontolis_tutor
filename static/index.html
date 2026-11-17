@@ -39,6 +39,10 @@
         <div class="divider"></div>
         <label class="field-label" for="questionCount">Минимум вопросов на сессию</label>
         <div class="number-wrap"><input id="questionCount" type="number" min="1" max="100" value="2"><span>вопроса</span></div>
+        <label class="field-label" for="studyDepth">Глубина учебного маршрута</label>
+        <select id="studyDepth" aria-label="Глубина учебного обхода"><option value="0">Без ограничения</option><option value="1">1 уровень</option><option value="2">2 уровня</option><option value="3">3 уровня</option></select>
+        <label class="field-label" for="questionCategory">Категория вопросов</label>
+        <select id="questionCategory" aria-label="Категория учебных вопросов"><option value="any">Все категории</option><option value="definition">Определения</option><option value="purpose">Назначение</option><option value="composition">Состав</option><option value="types">Разновидности</option><option value="relations">Связи</option><option value="compare">Сравнение</option><option value="operation">Принцип работы</option><option value="input">Входные данные</option><option value="output">Выходные данные</option></select>
         <p class="hint small">Обычное завершение разблокируется после заданного количества вопросов. Принудительное завершение доступно всегда.</p>
         <button id="startButton" class="primary-button full" type="button">Начать обучение <span aria-hidden="true">→</span></button>
         <p id="sidebarError" class="error" role="alert"></p>
@@ -71,7 +75,7 @@
 
   <dialog id="graphDialog" class="modal graph-modal" aria-labelledby="graphTitle">
     <div class="modal-head"><div><span class="eyebrow">ИНТЕРАКТИВНАЯ ОНТОЛОГИЯ</span><h2 id="graphTitle">Связи понятия</h2><p id="graphSummary">Выберите узел на схеме, чтобы увидеть его определение.</p></div><button class="modal-close" id="closeGraph" type="button" aria-label="Закрыть граф">×</button></div>
-    <div class="graph-toolbar"><label>Глубина: <select id="graphDepth"><option value="1">1 уровень</option><option value="2">2 уровня</option></select></label><span class="graph-zoom" aria-label="Масштаб схемы"><button type="button" id="graphZoomOut" title="Уменьшить">−</button><button type="button" id="graphZoomIn" title="Увеличить">+</button><button type="button" id="graphFit" title="Показать всё">⤢</button></span><span id="graphLegend">Название отношения — над стрелкой</span></div>
+    <div class="graph-toolbar"><label>Глубина: <select id="graphDepth"><option value="1">1 уровень</option><option value="2">2 уровня</option><option value="3">3 уровня</option><option value="all">Все понятия</option></select></label><span class="graph-zoom" aria-label="Масштаб схемы"><button type="button" id="graphZoomOut" title="Уменьшить">−</button><button type="button" id="graphZoomIn" title="Увеличить">+</button><button type="button" id="graphFit" title="Показать всё">⤢</button></span><span id="graphLegend">Название отношения — над стрелкой</span></div>
     <div class="graph-layout">
       <div class="graph-canvas"><svg id="graphSvg" viewBox="0 0 930 470" role="img" aria-label="Подграф понятий и их связей"></svg></div>
       <div class="graph-detail" id="graphDetail">Нажмите на овал, чтобы увидеть определение.</div>
@@ -82,7 +86,7 @@
     <div class="modal-head"><div><span class="eyebrow">НАЧАЛО РАБОТЫ</span><h2 id="helpTitle">Как пользоваться OntoTutor</h2><p>Изучайте понятия и отношения между ними в выбранном графе знаний.</p></div><button class="modal-close" id="closeHelp" type="button" aria-label="Закрыть справку">×</button></div>
     <ol class="help-steps">
       <li><strong>Выберите область знаний.</strong> Используйте список слева или загрузите свой экспорт ONTOLIS (.ont).</li>
-      <li><strong>Отметьте темы.</strong> Можно выбрать одну или несколько; укажите минимальное число вопросов.</li>
+      <li><strong>Отметьте темы.</strong> Можно выбрать одну или несколько; задайте число вопросов, глубину обхода и категорию вопросов.</li>
       <li><strong>Начните занятие.</strong> Спросите о любом выбранном понятии. Программа предложит учебный маршрут.</li>
       <li><strong>Спрашивайте своими словами.</strong> Например, «Что это?», «Для чего используется?» или «Какие части есть?». Если вопрос не распознан, уточните формулировку или используйте подсказку.</li>
       <li><strong>Посмотрите связи.</strong> Нажмите «Посмотреть граф связей» или кнопку под ответом. Клик по узлу откроет его определение.</li>

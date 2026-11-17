@@ -15,14 +15,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from graph import DEFAULT_ORDER, TEACHING_EDGES, Ontology, Step
+from graph import TEACHING_EDGES, Ontology, Step
+from question_processing import detect_intent
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOADS_DIR = BASE_DIR / "data" / "ontologies"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 DEFAULT_ID = "default"
 
-app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="5.0.0")
+app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="6.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 lock = RLock()
 
@@ -52,10 +53,12 @@ class Session:
     active: bool = True
     reason: str | None = None
     history: list[dict] = field(default_factory=list)  # сообщения вопрос/ответ, доступные для восстановления чата
+    search_depth: int = 0  # 0 = весь доступный учебный граф
+    question_category: str = 'any'  # разрешённый вид вопросов
 
 
 # Исходная онтология сохраняется для совместимости с ранее созданным проектом.
-ontology = Ontology(BASE_DIR / "data" / "ontology.ont", default_order=DEFAULT_ORDER)
+ontology = Ontology(BASE_DIR / "data" / "ontology.ont")
 ontologies: dict[str, OntologyEntry] = {
     DEFAULT_ID: OntologyEntry(DEFAULT_ID, "Исходная онтология", "ontology.ont", BASE_DIR / "data" / "ontology.ont", ontology)
 }
@@ -86,6 +89,8 @@ class CreateSession(BaseModel):
     ontology_id: str = DEFAULT_ID
     selected_topics: list[str] = Field(min_length=1, max_length=1000)
     question_count: int = Field(ge=1, le=100)
+    search_depth: int = Field(default=0, ge=0, le=10)
+    question_category: str = Field(default='any', pattern='^(any|definition|purpose|composition|types|relations|operation|compare|input|output)$')
 
 
 class AskRequest(BaseModel):
@@ -167,6 +172,8 @@ def snapshot(sid: str, session: Session) -> dict:
         "trace": trace,
         "suggestions": suggestions,
         "review": choosing and session.branch_number > 0,
+        "search_depth": session.search_depth,
+        "question_category": session.question_category,
     }
 
 
@@ -235,7 +242,7 @@ def set_relations(ontology_id: str, body: RelationMappingRequest):
         if set(body.mapping) - possible or any(role not in allowed for role in body.mapping.values()):
             raise HTTPException(422, "Неизвестный тип связи или выбранная учебная роль.")
         try:
-            replacement = Ontology(entry.path, default_order=DEFAULT_ORDER if ontology_id == DEFAULT_ID else None, relation_mapping=body.mapping)
+            replacement = Ontology(entry.path, relation_mapping=body.mapping)
             mapping_file = entry.path.parent / "relation_mapping.json"
             temporary = mapping_file.with_suffix(".tmp")
             temporary.write_text(json.dumps(body.mapping, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -273,12 +280,25 @@ def ontology_quality(ontology_id: str):
 
 
 @app.get("/api/ontologies/{ontology_id}/graph/{node_id}")
-def ontology_subgraph(ontology_id: str, node_id: str, depth: int = Query(1, ge=1, le=2)):
+def ontology_subgraph(ontology_id: str, node_id: str, depth: str = Query("1")):
     with lock:
         graph = entry_or_404(ontology_id).graph
         if node_id not in graph.nodes:
             raise HTTPException(404, "Понятие не найдено в выбранной онтологии.")
-        return graph.subgraph(node_id, depth)
+        if depth not in ('1', '2', '3', 'all'):
+            raise HTTPException(422, 'Выберите 1, 2, 3 уровня или «Все».')
+        return graph.subgraph(node_id, depth if depth == 'all' else int(depth))
+
+
+@app.get("/api/ontologies/{ontology_id}/search")
+def search_ontology(ontology_id: str, q: str = Query(..., min_length=2, max_length=1000)):
+    """Незачётный поиск: варианты ответа и степень сходства для уточнения."""
+    with lock:
+        g = entry_or_404(ontology_id).graph
+        ident, candidates = g.search.resolve(q)
+        return {"matched_id": ident, "candidates": [
+            {"id": v.id, "name": v.name, "score": round(v.score, 3), "method": v.origin}
+            for v in candidates[:5]]}
 
 
 @app.post("/api/sessions")
@@ -290,11 +310,19 @@ def new_session(payload: CreateSession):
         missing = [node_id for node_id in roots if node_id not in g.nodes]
         if missing:
             raise HTTPException(422, f"В выбранной онтологии нет узлов с ID: {', '.join(missing)}")
-        allowed = {step.node_id for step in g.learning_path(roots)}
+        full_path = g.learning_path(roots)
+        if payload.search_depth:
+            depths = {}
+            for step in full_path:
+                depths[step.node_id] = depths.get(step.parent_id, -1) + 1
+            allowed = {step.node_id for step in full_path if depths[step.node_id] <= payload.search_depth}
+        else:
+            allowed = {step.node_id for step in full_path}
         sid = uuid4().hex
         # Новый маршрут пока НЕ строим: пользователь задаст старт первым вопросом.
         s = Session(ontology_id=entry.id, ontology_title=entry.title, graph=g,
-                    selected_topics=roots, quota=payload.question_count, allowed_nodes=allowed)
+                    selected_topics=roots, quota=payload.question_count, allowed_nodes=allowed,
+                    search_depth=payload.search_depth, question_category=payload.question_category)
         sessions[sid] = s
         return snapshot(sid, s)
 
@@ -345,20 +373,35 @@ def ask(sid: str, body: AskRequest):
             raise HTTPException(422, "Введите вопрос")
         choosing = not s.path or s.position >= len(s.path)
         current_id = None if choosing else s.path[s.position].node_id
+        intent = detect_intent(question)
+        if s.question_category != 'any' and intent != s.question_category:
+            answer = (f"В настройках этого занятия выбрана категория вопросов «{s.question_category}». "
+                      "Сформулируйте вопрос этой категории или начните новую сессию с другими настройками. "
+                      "Вопрос не засчитан.")
+            remember(s, question, answer, 'unrecognized')
+            return {'result': 'unrecognized', 'answer': answer, 'sources': [], 'state': snapshot(sid, s)}
         matched = g.matched_node(question, current_id, preferred_ids=s.allowed_nodes)
         if not ("?" in question or re.match(r"(?i)^\s*(что|какая|какие|какой|как|из чего|зачем|почему|где|для чего|чем|сколько|расскажи|объясни|назови|можно|имеет|состоит|опиши|сравни|поясни|расскажи|подскажи)\b", question) or matched):
             raise HTTPException(422, "Напишите вопрос или название понятия, например: «Что такое нейрон?»")
 
         if choosing:
             if matched is None:
-                answer = "Не удалось однозначно найти понятие. Уточните его название или выберите пример вопроса под чатом. Вопрос не засчитан."
+                variants = g.matched_concepts(question, s.allowed_nodes, limit=4, include_weak=True)
+                names = [r['name'] for r in variants]
+                answer = ("Не удалось уверенно распознать понятие. " +
+                          ("Возможно, вы имели в виду: " + "; ".join(f"«{n}»" for n in names) + ". " if names else
+                           "Попробуйте назвать интересующее понятие точнее. ") + "Вопрос не засчитан.")
                 remember(s, question, answer, "unrecognized")
-                return {"result": "unrecognized", "answer": answer, "sources": [], "state": snapshot(sid, s)}
+                return {"result": "unrecognized", "answer": answer, "alternatives": variants, "sources": [], "state": snapshot(sid, s)}
             if matched not in s.allowed_nodes:
-                answer = (f"Понятие «{g.nodes[matched]['name']}» вне выбранной области. "
-                          "Начните с доступной темы или завершите занятие, чтобы поменять настройки. Вопрос не засчитан.")
-                remember(s, question, answer, "out_of_scope")
-                return {"result": "out_of_scope", "answer": answer, "sources": [], "state": snapshot(sid, s)}
+                outside_answer, sources = g.response(matched, question)
+                answer = ("Найдено понятие в загруженной онтологии, но оно не входит в выбранный учебный маршрут. "
+                          "Ниже справочный ответ (вопрос не засчитан).\n\n" + outside_answer +
+                          "\n\nДля включения этого понятия в маршрут выберите соответствующую тему в новой сессии.")
+                remember(s, question, answer, "out_of_scope", sources, matched)
+                return {"result": "out_of_scope", "answer": answer, "sources": sources,
+                        "answered_node": {"id": matched, "name": g.nodes[matched]["name"]},
+                        "state": snapshot(sid, s)}
             # Стартовая точка выбрана САМИМ вопросом. DFS вычисляем лишь для неё.
             s.path = [step for step in g.learning_path([matched]) if step.node_id in s.allowed_nodes]
             s.position = 0
@@ -370,9 +413,10 @@ def ask(sid: str, body: AskRequest):
                 current_name = g.nodes[current_id]["name"]
                 # Свободный вопрос вне текущей ветки не меняет учебный маршрут.
                 future_steps = {p.node_id for p in s.path[s.position + 1:]}
-                if (matched in s.allowed_nodes and matched not in future_steps
-                    and matched not in {p.node_id for p in s.path[:s.position]}
-                    and current_id not in {p.node_id for p in g.learning_path([matched])}):
+                if ((matched not in s.allowed_nodes) or
+                    (matched not in future_steps
+                     and matched not in {p.node_id for p in s.path[:s.position]}
+                     and current_id not in {p.node_id for p in g.learning_path([matched])})):
                     aside_answer, sources = g.response(matched, question)
                     answer = ("Дополнительный вопрос (без перехода на другую тему).\n\n"
                               + aside_answer + f"\n\nПродолжение занятия: «{current_name}».")
@@ -384,10 +428,13 @@ def ask(sid: str, body: AskRequest):
                 remember(s, question, answer, "out_of_order")
                 return {"result": "out_of_order", "answer": answer, "sources": [], "state": snapshot(sid, s)}
             if matched is None and not g.is_contextual_question(question, current_id):
-                answer = ("Не удалось связать вопрос с текущим понятием. Попробуйте указать его название "
-                          "или нажмите на пример вопроса. Вопрос не засчитан.")
+                variants = g.matched_concepts(question, s.allowed_nodes, limit=4, include_weak=True)
+                names = [r['name'] for r in variants]
+                answer = ("Не удалось связать вопрос с текущим понятием. " +
+                          ("Возможно, вы имели в виду: " + "; ".join(f"«{n}»" for n in names) + ". " if names else
+                           "Укажите название понятия. ") + "Вопрос не засчитан.")
                 remember(s, question, answer, "unrecognized")
-                return {"result": "unrecognized", "answer": answer, "sources": [], "state": snapshot(sid, s)}
+                return {"result": "unrecognized", "answer": answer, "alternatives": variants, "sources": [], "state": snapshot(sid, s)}
 
         step = s.path[s.position]
         answer, sources = g.response(current_id, question)

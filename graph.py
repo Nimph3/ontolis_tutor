@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 import re
 import unicodedata
-from question_processing import SYNONYMS, detect_intent, phrase_score, aliases, normalize as normalize_query
+from question_processing import detect_intent, normalize as normalize_query
+from ontology_search import OntologySearch
 
 
 @dataclass(frozen=True)
@@ -33,19 +34,6 @@ TEACHING_EDGES = {
     "input": ("backward", 6),
 }
 
-# Явный учебный порядок между дочерними понятиями, где он значим.
-# В оригинальном ONTOLIS-представлении свойства 'order' нет.
-DEFAULT_ORDER = {
-    "3": ["46", "26", "27", "28", "29", "58"],
-    "46": ["2"],
-    "2": ["8", "10", "12", "14", "16", "20", "60"],
-    "8": ["111", "112", "113"],
-    "20": ["103", "105", "107", "109"],
-    "49": ["63", "53", "65"],
-    "63": ["64"],
-    "185": ["187", "188", "191"],
-    "112": ["185", "105", "109"],
-}
 
 
 def normalize(s: str) -> str:
@@ -94,7 +82,7 @@ class Ontology:
                 raise ValueError(f"У понятия «{name}» поле attributes должно быть объектом.")
             # Нормализуем лишь внутреннее представление: файл ONTOLIS не меняем.
             attrs = dict(attrs)
-            def_key = next((key for key in ("def", "Определение", "определение", "definition", "Definition", "Описание", "description")
+            def_key = next((key for key in ("definition", "Definition", "def", "Определение", "определение", "Описание", "description")
                             if str(attrs.get(key) or "").strip()), None)
             if def_key and def_key != "def":
                 attrs["def"] = str(attrs[def_key]).strip()
@@ -114,6 +102,7 @@ class Ontology:
                 raise ValueError(f"Связь #{rid} ссылается на отсутствующее понятие ({src} → {dst}).")
             self.relations[rid] = dict(item, id=rid, source_node_id=src, destination_node_id=dst)
 
+        self.search = OntologySearch(self.nodes)
         self.definitions_count = sum(bool(str(n["attributes"].get("def") or "").strip()) for n in self.nodes.values())
         self.curriculum_order = dict(default_order or {})
         order_file = path.parent / "curriculum_order.json"
@@ -132,9 +121,11 @@ class Ontology:
         if not isinstance(relation_mapping, dict):
             raise ValueError("relation_mapping.json: ожидается объект {тип: роль}.")
         available = {r["name"] for r in self.relations.values()}
-        if any(k not in available or v not in (*TEACHING_EDGES.keys(), "same_as", "ignore") for k, v in relation_mapping.items()):
-            raise ValueError("Неверный тип исходной связи или учебная роль в relation_mapping.json.")
-        self.relation_mapping = dict(relation_mapping)
+        if any(v not in (*TEACHING_EDGES.keys(), "same_as", "ignore") for v in relation_mapping.values()):
+            raise ValueError("Неверная учебная роль в relation_mapping.json.")
+        # Старая настройка для удалённого/переименованного типа не должна
+        # блокировать загрузку новой версии онтологии.
+        self.relation_mapping = {k: v for k, v in relation_mapping.items() if k in available}
 
         self.outgoing = defaultdict(list)
         self.incoming = defaultdict(list)
@@ -213,66 +204,11 @@ class Ontology:
                     out.append((r["source_node_id"], r))
         return out
 
-    def matched_node(self, question: str, current_id: str | None = None, preferred_ids: set[str] | None = None) -> str | None:
-        """Поиск по названиям. При равном совпадении предпочитаем доступный узел.
-
-        current_id используется при прохождении ветки (например, два одноимённых
-        понятия). В режиме выбора начала он отсутствует.
-        """
-        normalized = normalize(question)
-        padded = f" {normalized} "
-
-        def choose(ties: list[str]) -> str:
-            if current_id in ties:
-                return current_id
-            inside = [nid for nid in ties if preferred_ids is not None and nid in preferred_ids]
-            return sorted(inside or ties, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))[0]
-        exact_matches = []
-        for nid, node in self.nodes.items():
-            name = normalize(node["name"])
-            if f" {name} " in padded:
-                exact_matches.append((len(name.split()), len(name), nid))
-        if exact_matches:
-            longest = max((x[0], x[1]) for x in exact_matches)
-            ties = [nid for wc, length, nid in exact_matches if (wc, length) == longest]
-            return choose(ties)
-
-        # Короткое обозначение лабораторной работы, например «ЛР5».
-        lab = re.search(r"\bлр\s*([256])\b", normalized)
-        if lab:
-            shorthand = "лр" + lab.group(1)
-            match = [nid for nid, n in self.nodes.items() if normalize(n["name"]).startswith(shorthand + " ")]
-            if match:
-                return choose(match)
-
-        # Поддержка элементарных падежных изменений: «из чего состоит нейронная сеть».
-        # Чужое понятие распознаём только при существенном совпадении слов.
-        words = [word_stem(w) for w in normalized.split()]
-        stop = {"что", "так", "это", "каков", "из", "каких", "чего", "как", "есть", "для", "чем", "можно", "какие", "какой", "состо", "где", "про", "расскажи", "объясни"}
-        question_terms = {w for w in words if w not in stop and len(w) >= 4}
-        candidates = []
-        for nid, node in self.nodes.items():
-            stems = [word_stem(w) for w in normalize(node["name"]).split()]
-            relevant = [w for w in stems if len(w) >= 4]
-            if not relevant:
-                continue
-            common = sum(w in question_terms for w in relevant)
-            if common == len(relevant) or (len(relevant) > 1 and common >= 2 and common / len(relevant) >= 0.66):
-                candidates.append((common / len(relevant), common, len(" ".join(relevant)), nid))
-        if candidates:
-            candidates.sort(reverse=True)
-            best = candidates[0][:3]
-            ties = [c[3] for c in candidates if c[:3] == best]
-            if current_id in ties:
-                return current_id
-            return sorted(ties, key=lambda x: (0, int(x)) if x.isdigit() else (1, x))[0]
-        # Контролируемый fallback: алиасы, синонимы и небольшие опечатки.
-        matches = self.matched_concepts(question, preferred_ids=preferred_ids)
-        if matches:
-            best = matches[0]["score"]
-            ties = [m["id"] for m in matches if m["score"] == best]
-            return choose(ties)
-        return None
+    def matched_node(self, question: str, current_id: str | None = None,
+                     preferred_ids: set[str] | None = None) -> str | None:
+        """Независимое от тематики распознавание. Слабый поиск не засчитывает вопрос."""
+        selected, _ = self.search.resolve(question, current_id, preferred_ids)
+        return selected
 
     def is_contextual_question(self, question: str, current_id: str) -> bool:
         """Без явно названного понятия допускаются вопросы о ТЕКУЩЕЙ теме.
@@ -306,65 +242,60 @@ class Ontology:
         }
 
     def matched_concepts(self, question: str, preferred_ids: set[str] | None = None,
-                         limit: int = 4) -> list[dict]:
-        """Список кандидатов с оценкой релевантности; исключает ненадёжные совпадения."""
-        found = []
-        q = normalize_query(question)
-        for nid, node in self.nodes.items():
-            terms = [node["name"]]
-            for key in ("aliases", "synonyms", "Синонимы", "Алиасы", "Краткое название"):
-                terms += aliases(node["attributes"].get(key))
-            for short, fulls in SYNONYMS.items():
-                if normalize_query(node["name"]) in [normalize_query(v) for v in fulls]:
-                    terms.append(short)
-            score = max(phrase_score(q, term) for term in terms)
-            if score >= .7:
-                found.append({"id": nid, "name": node["name"], "score": round(score, 2)})
-        found.sort(key=lambda item: (-item["score"],
-                   -(len(normalize_query(item["name"]).split())),
-                   0 if preferred_ids and item["id"] in preferred_ids else 1,
-                   item["id"]))
-        # Не выдаём одинаковое название несколько раз без необходимости.
-        unique = []
-        seen_names = set()
-        for item in found:
-            name = normalize_query(item["name"])
-            if name in seen_names:
+                         limit: int = 4, include_weak: bool = False) -> list[dict]:
+        """Кандидаты: используются и для сопоставления, и для уточняющих подсказок."""
+        matches = self.search.lookup(question, preferred_ids=preferred_ids, limit=max(limit + 5, 10))
+        result, seen = [], set()
+        for candidate in matches:
+            if candidate.score < (.2 if include_weak else .76):
                 continue
-            unique.append(item)
-            seen_names.add(name)
-            if len(unique) >= limit:
+            key = normalize_query(candidate.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({"id": candidate.id, "name": candidate.name,
+                           "score": round(candidate.score, 3), "method": candidate.origin})
+            if len(result) >= limit:
                 break
-        return unique
+        return result
 
-    def subgraph(self, node_id: str, depth: int = 1, limit: int = 13) -> dict:
-        """Ограниченный подграф с направлениями рёбер для отдельного окна."""
+    def subgraph(self, node_id: str, depth: int | str = 1, limit: int | None = None) -> dict:
+        """1/2/3 уровня или ВСЕ узлы и связи (включая несвязанные компоненты)."""
         if node_id not in self.nodes:
             raise KeyError(node_id)
-        depth = max(1, min(depth, 2))
-        visited, frontier = {node_id}, {node_id}
-        for _ in range(depth):
-            next_layer = set()
-            for nid in sorted(frontier):
-                for neighbor, relation in self.neighborhood(
-                    nid, set(TEACHING_EDGES) | {"same_as", "ignore"}, "both"
-                ):
-                    if neighbor not in visited and len(visited) + len(next_layer) < limit:
-                        next_layer.add(neighbor)
-            visited.update(next_layer)
-            frontier = next_layer
-            if not frontier:
-                break
-        # Нестандартные отношения тоже показываем: визуализация != учебный DFS.
+        if depth not in (1, 2, 3, 'all'):
+            raise ValueError('Допустимы уровни 1, 2, 3 или all.')
+        visited = {node_id}
+        levels = {node_id: 0}
+        if depth == 'all':
+            visited = set(self.nodes)
+            levels = {nid: 3 for nid in visited}
+            levels[node_id] = 0
+        else:
+            frontier = {node_id}
+            for level in range(1, depth + 1):
+                following = set()
+                for nid in frontier:
+                    for r in self.outgoing[nid] + self.incoming[nid]:
+                        other = r['destination_node_id'] if r['source_node_id'] == nid else r['source_node_id']
+                        if other not in visited:
+                            following.add(other)
+                for nid in following:
+                    levels.setdefault(nid, level)
+                visited.update(following)
+                frontier = following
+                if not frontier:
+                    break
         edge_items = [r for r in self.relations.values()
-                      if r["source_node_id"] in visited and r["destination_node_id"] in visited]
+                      if r['source_node_id'] in visited and r['destination_node_id'] in visited]
         return {
-            "center_id": node_id,
-            "nodes": [{"id": nid, "name": self.nodes[nid]["name"],
-                       "definition": self.nodes[nid]["attributes"].get("def", "")}
+            'center_id': node_id,
+            'depth': depth,
+            'nodes': [{'id': nid, 'name': self.nodes[nid]['name'], 'level': levels.get(nid, 3),
+                       'definition': self.nodes[nid]['attributes'].get('def', '')}
                       for nid in sorted(visited)],
-            "edges": [self.describe_relation(r) for r in edge_items[:100]],
-            "truncated": len(edge_items) > 100 or len(visited) >= limit,
+            'edges': [self.describe_relation(r) for r in edge_items],
+            'truncated': False,
         }
 
     def quality_report(self) -> dict:

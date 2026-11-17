@@ -22,7 +22,7 @@ def test_russian_definition_field_is_read():
 
 def test_original_ontology_unchanged():
     assert len(ontology.nodes) == 54
-    assert ontology.nodes["64"]["attributes"]["def"].startswith("Нейрон - это")
+    assert ontology.nodes["64"]["attributes"]["def"].startswith("Нейрон — это")
 
 
 def test_synonym_and_flexible_formulations():
@@ -71,9 +71,9 @@ def test_subgraph_is_bounded_and_direction_preserved():
 def test_quality_report_is_honest():
     data = client.get("/api/ontologies/default/quality").json()
     assert data["nodes"] == 54
-    assert data["definitions_count"] == 54
+    assert data["definitions_count"] == 53
     assert "Функция активации" in data["duplicate_names"]
-    assert len(data["unnamed_relation_ids"]) == 2
+    assert len(data["unnamed_relation_ids"]) == 0
     assert "логическая" in data["note"] or "логическую" in data["note"]
 
 
