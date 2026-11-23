@@ -42,8 +42,10 @@ def term_variants(title: str) -> list[str]:
     # Аббревиатура берётся из самого заголовка: ИНС, ЭВМ и т. п.
     if len(name_parts) >= 3 and all(len(w) >= 3 for w in name_parts):
         terms.append(''.join(w[0] for w in name_parts))
-    if len(name_parts) >= 3:
-        for length in (2, 3):
+    if len(name_parts) >= 2:
+        # Частичные названия длиной 2+ слов: «алгоритм обратного
+        # распространения» должен опережать одиночное «алгоритм».
+        for length in range(2, min(7, len(name_parts)) + 1):
             terms.extend(' '.join(name_parts[i:i + length])
                          for i in range(len(name_parts) - length + 1))
     # Для слитных сокращений строим возможные сокращённые формы
@@ -104,6 +106,7 @@ class OntologySearch:
                 self.vectorizer, self.matrix = None, None
         self.embedding_model = None
         self.embedding_vectors = None
+        self.adjacency = defaultdict(set)
         # Полностью необязательная модель, только локальный путь; ни сети,
         # ни скачивания весов при открытии ONTOLIS не требуется.
         model_path = os.environ.get('ONTOTUTOR_EMBEDDING_MODEL', '').strip()
@@ -116,6 +119,28 @@ class OntologySearch:
             except (ImportError, OSError, ValueError):
                 self.embedding_model = None
                 self.embedding_vectors = None
+
+    def attach_relations(self, relations) -> None:
+        """Локальный контекст формируется из РЕАЛЬНЫХ связей любой онтологии."""
+        self.adjacency.clear()
+        for r in relations:
+            a, b = r['source_node_id'], r['destination_node_id']
+            self.adjacency[a].add(b)
+            self.adjacency[b].add(a)
+
+    def context_distances(self, start: str | None, max_depth: int = 3) -> dict[str, int]:
+        if start is None or start not in self.nodes:
+            return {}
+        dist = {start: 0}
+        queue = [start]
+        for current in queue:
+            if dist[current] >= max_depth:
+                continue
+            for adjacent in self.adjacency[current]:
+                if adjacent not in dist:
+                    dist[adjacent] = dist[current] + 1
+                    queue.append(adjacent)
+        return dist
 
     def _search_text(self, nid: str) -> str:
         node = self.nodes[nid]
@@ -140,7 +165,8 @@ class OntologySearch:
         similarities = self.embedding_vectors @ vector
         return {nid: max(0.0, float(score)) for nid, score in zip(self.node_ids, similarities)}
 
-    def lookup(self, question: str, preferred_ids: set[str] | None = None, limit: int = 5) -> list[SearchResult]:
+    def lookup(self, question: str, preferred_ids: set[str] | None = None,
+               limit: int = 5, current_id: str | None = None) -> list[SearchResult]:
         q = normalize(question)
         if not q:
             return []
@@ -152,6 +178,7 @@ class OntologySearch:
         emb = self._embedding_scores(q)
         result: list[SearchResult] = []
         padded = f' {q} '
+        context = self.context_distances(current_id)
         for nid, node in self.nodes.items():
             strongest = 0.0
             how = 'поиск по термину'
@@ -211,6 +238,26 @@ class OntologySearch:
                         score = .78 + (ratio - .75) * .30
                         if score > strongest:
                             strongest, how = score, 'сокращённое написание'
+            # Вопрос с конкретным многочленным названием не должен попадать
+            # в общий корневой узел по единственному слову: «алгоритм» !=
+            # «алгоритм обратного распространения».
+            title_tokens = normalized_tokens(node['name'].split('(')[0])
+            shared = title_tokens & qt
+            if len(qt) >= 2 and len(title_tokens) == 1 and len(shared) == 1:
+                strongest = min(strongest, .62)
+            if len(title_tokens) >= 2 and len(shared) >= 2:
+                completeness = len(shared) / len(title_tokens)
+                specificity = len(shared) / len(qt)
+                if specificity >= .64 and completeness >= .5:
+                    score = .87 + .10 * specificity + .045 * completeness
+                    if score > strongest:
+                        strongest, how = min(1.02, score), 'составное название понятия'
+            # Локальный графовый контекст применяется только как небольшой
+            # бонус, никогда вместо текстового совпадения.
+            if current_id and strongest >= .52:
+                distance = context.get(nid)
+                if distance is not None:
+                    strongest += {0: .018, 1: .040, 2: .023, 3: .010}.get(distance, 0)
             # При поиске понятия по его описанию короткое слово в вопросе
             # может оказаться лишь контекстом («сигнал нейрона»), а не ответом.
             if descriptive and len(qt) >= 4 and len(normalized_tokens(node['name'])) == 1:
@@ -248,7 +295,7 @@ class OntologySearch:
 
     def resolve(self, question: str, current_id: str | None = None,
                 preferred_ids: set[str] | None = None) -> tuple[str | None, list[SearchResult]]:
-        result = self.lookup(question, preferred_ids, limit=8)
+        result = self.lookup(question, preferred_ids, limit=8, current_id=current_id)
         if not result:
             return None, []
         high = result[0].score

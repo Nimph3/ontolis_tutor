@@ -23,7 +23,7 @@ UPLOADS_DIR = BASE_DIR / "data" / "ontologies"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 DEFAULT_ID = "default"
 
-app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="6.0.0")
+app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="7.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 lock = RLock()
 
@@ -260,7 +260,7 @@ def meta(ontology_id: str = Query(DEFAULT_ID)):
         entry = entry_or_404(ontology_id)
         g = entry.graph
         topics = g.available_topics()
-        default_selected = ["3"] if ontology_id == DEFAULT_ID and "3" in g.nodes else [max(topics, key=lambda t: t["descendants"])["id"]]
+        default_selected = [max(topics, key=lambda t: t["descendants"])["id"]]
         return {
             "ontology_id": entry.id,
             "ontology_title": entry.title,
@@ -288,6 +288,20 @@ def ontology_subgraph(ontology_id: str, node_id: str, depth: str = Query("1")):
         if depth not in ('1', '2', '3', 'all'):
             raise HTTPException(422, 'Выберите 1, 2, 3 уровня или «Все».')
         return graph.subgraph(node_id, depth if depth == 'all' else int(depth))
+
+
+@app.get("/api/ontologies/{ontology_id}/triples")
+def ontology_triples(ontology_id: str, node_id: str | None = None,
+                     depth: int = Query(1, ge=1, le=3),
+                     limit: int = Query(250, ge=1, le=5000)):
+    """Направленные семантические тройки текущей загруженной онтологии."""
+    with lock:
+        graph = entry_or_404(ontology_id).graph
+        if node_id is not None and node_id not in graph.nodes:
+            raise HTTPException(404, "Понятие не найдено в выбранной онтологии.")
+        triples = graph.semantic_triples(node_id, depth, limit)
+        return {"ontology_id": ontology_id, "center_id": node_id,
+                "items": triples, "count": len(triples)}
 
 
 @app.get("/api/ontologies/{ontology_id}/search")
@@ -386,7 +400,8 @@ def ask(sid: str, body: AskRequest):
 
         if choosing:
             if matched is None:
-                variants = g.matched_concepts(question, s.allowed_nodes, limit=4, include_weak=True)
+                variants = g.matched_concepts(question, s.allowed_nodes, limit=4,
+                                              include_weak=True, current_id=current_id)
                 names = [r['name'] for r in variants]
                 answer = ("Не удалось уверенно распознать понятие. " +
                           ("Возможно, вы имели в виду: " + "; ".join(f"«{n}»" for n in names) + ". " if names else
@@ -408,6 +423,17 @@ def ask(sid: str, body: AskRequest):
             s.branch_number += 1
             current_id = matched
         else:
+            # Если ученик назвал непосредственного соседа, который ИДЁТ
+            # СЛЕДУЮЩИМ в текущем DFS-маршруте, даём изучить именно его.
+            # Это поддерживает последовательность «Алгоритм» ->
+            # «Алгоритм обучения» -> «Алгоритм обратного распространения».
+            # Другие дальние переходы по-прежнему не зачтены.
+            if (matched and matched != current_id
+                    and s.position + 1 < len(s.path)
+                    and s.path[s.position + 1].node_id == matched
+                    and g.graph_distance(current_id, matched, max_depth=1) == 1):
+                s.position += 1
+                current_id = matched
             if matched and matched != current_id:
                 name = g.nodes[matched]["name"]
                 current_name = g.nodes[current_id]["name"]
@@ -428,7 +454,8 @@ def ask(sid: str, body: AskRequest):
                 remember(s, question, answer, "out_of_order")
                 return {"result": "out_of_order", "answer": answer, "sources": [], "state": snapshot(sid, s)}
             if matched is None and not g.is_contextual_question(question, current_id):
-                variants = g.matched_concepts(question, s.allowed_nodes, limit=4, include_weak=True)
+                variants = g.matched_concepts(question, s.allowed_nodes, limit=4,
+                                              include_weak=True, current_id=current_id)
                 names = [r['name'] for r in variants]
                 answer = ("Не удалось связать вопрос с текущим понятием. " +
                           ("Возможно, вы имели в виду: " + "; ".join(f"«{n}»" for n in names) + ". " if names else
@@ -438,6 +465,7 @@ def ask(sid: str, body: AskRequest):
 
         step = s.path[s.position]
         answer, sources = g.response(current_id, question)
+        semantic_triples = g.semantic_triples(current_id, depth=1, limit=100)
         via = g.describe_relation(g.relations[step.via_relation_id]) if step.via_relation_id else None
         remember(s, question, answer, "answered", sources, current_id, via)
         s.answered += 1
@@ -453,6 +481,7 @@ def ask(sid: str, body: AskRequest):
             "traversed_via": via,
             "branch_completed": finished_branch,
             "sources": sources,
+            "semantic_triples": semantic_triples,
             "state": state,
         }
 
