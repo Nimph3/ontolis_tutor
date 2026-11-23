@@ -89,12 +89,20 @@ def test_real_api_new_ontology_next_neighbor_can_be_studied():
     }).json()['session_id']
     first = client.post(f'/api/sessions/{sid}/ask', json={'question': 'Что такое механизм?'}).json()
     assert first['result'] == 'answered'
-    assert first['state']['current']['id'] == '2'
-    # После общего понятия следующий узел по ветке можно назвать напрямую.
+    assert first['state']['current']['id'] == '1'
+    assert [n['id'] for n in first['state']['neighbors']] == ['2']
+    # Сначала переход к непосредственному соседу, затем глубже.
+    middle = client.post(f'/api/sessions/{sid}/ask', json={
+        'question': 'Что такое механизм обучения?'
+    }).json()
+    assert middle['result'] == 'answered'
+    assert middle['transition'] == 'neighbor'
+    assert middle['state']['current']['id'] == '2'
     jump = client.post(f'/api/sessions/{sid}/ask', json={
         'question': 'Что такое механизм обратного хода?'
     }).json()
     assert jump['result'] == 'answered'
+    assert jump['transition'] == 'neighbor'
     assert jump['answered_node']['id'] == '3'
-    assert jump['state']['questions_answered'] == 2
+    assert jump['state']['questions_answered'] == 3
     assert jump['semantic_triples']
