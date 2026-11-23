@@ -1,4 +1,4 @@
-"""FastAPI: каталог независимых ONTOLIS-графов и закреплённые за ними учебные сессии."""
+"""FastAPI: независимые онтологии и свободная навигация по графу во время занятия."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -23,7 +23,7 @@ UPLOADS_DIR = BASE_DIR / "data" / "ontologies"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 DEFAULT_ID = "default"
 
-app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="7.0.0")
+app = FastAPI(title="OntoTutor — обучающая система на графе знаний", version="8.0.0")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 lock = RLock()
 
@@ -45,8 +45,9 @@ class Session:
     selected_topics: list[str]
     quota: int
     allowed_nodes: set[str]  # отмеченные темы и все доступные через них подтемы
-    path: list[Step] = field(default_factory=list)  # маршрут ТОЛЬКО текущей ветки
-    position: int = 0  # индекс следующего вопроса в текущей ветке
+    path: list[Step] = field(default_factory=list)  # фактическая история переходов пользователя
+    position: int = 0  # индекс последнего вопроса (совместимость со статусом)
+    visited_nodes: set[str] = field(default_factory=set)  # уже изученные понятия
     branch_number: int = 0
     branches_completed: int = 0
     answered: int = 0
@@ -123,57 +124,68 @@ def info(entry: OntologyEntry) -> dict:
 
 
 def snapshot(sid: str, session: Session) -> dict:
-    """Состояние двух режимов: выбор начального узла и обязательный обход ветки."""
-    g = session.graph
-    choosing = not session.path or session.position >= len(session.path)
-    step = None if choosing else session.path[session.position]
-    trace = []
-    if step:
-        # Родители каждого шага сохраняются внутри текущего DFS-маршрута.
-        lookup = {p.node_id: p for p in session.path[:session.position + 1]}
-        cursor = step
-        while cursor:
-            item = {"node_id": cursor.node_id, "name": g.nodes[cursor.node_id]["name"]}
-            if cursor.via_relation_id:
-                item["relation_id"] = cursor.via_relation_id
-                item["relation_type"] = cursor.via_relation_type
-            trace.append(item)
-            cursor = lookup.get(cursor.parent_id) if cursor.parent_id else None
-        trace.reverse()
+    """Состояние занятия: последнее изученное понятие и ВСЕ его соседи.
 
-    # Рекомендации не ограничивают выбор: стартовать можно с ЛЮБОГО
-    # понятия внутри выбранной области, в том числе из глубины ветки.
-    examples = list(dict.fromkeys(session.selected_topics + [p.node_id for p in g.learning_path(session.selected_topics)]))
-    suggestions = (g.suggested_questions(step.node_id) if step else
-                   [f"Что такое {g.nodes[nid]['name']}?" for nid in examples[:3]])
+    DFS служит для учебных рекомендаций, но не управляет допустимым
+    порядком вопросов: пользователь выбирает следующий узел самостоятельно.
+    """
+    graph = session.graph
+    focus = session.path[-1].node_id if session.path else None
+    choosing = focus is None
+    neighbors = (graph.adjacent_concepts(focus, session.allowed_nodes)
+                 if focus else [])
+    # Новые соседние понятия удобнее показывать первыми; назад по уже изученным
+    # узлам вернуться также можно в любой момент.
+    neighbors.sort(key=lambda entry: (
+        entry['id'] in session.visited_nodes,
+        entry['name'].casefold(), entry['id']
+    ))
+    if focus:
+        suggestions = [f"Что такое {entry['name']}?" for entry in neighbors[:6]]
+        # Можно уточнить вопрос о том же понятии, не переходя по графу.
+        suggestions.extend(graph.suggested_questions(focus)[1:3])
+    else:
+        starters = list(dict.fromkeys(session.selected_topics))
+        suggestions = [f"Что такое {graph.nodes[nid]['name']}?" for nid in starters[:5]]
+    trace = []
+    for step in session.path[-5:]:
+        entry = {'node_id': step.node_id, 'name': graph.nodes[step.node_id]['name']}
+        if step.via_relation_id:
+            entry.update(relation_id=step.via_relation_id,
+                         relation_type=step.via_relation_type)
+        trace.append(entry)
+    total = len(session.allowed_nodes)
     return {
-        "session_id": sid,
-        "ontology_id": session.ontology_id,
-        "ontology_title": session.ontology_title,
-        "active": session.active,
-        "reason": session.reason,
-        "question_count": session.quota,
-        "questions_answered": session.answered,
-        "remaining": max(0, session.quota - session.answered),
-        "can_finish": session.active and session.answered >= session.quota,
-        "mode": "choose_start" if choosing else "in_branch",
-        "allowed_count": len(session.allowed_nodes),
-        "branch_number": session.branch_number,
-        "branches_completed": session.branches_completed,
-        "course_length": len(session.path),  # длина последней/текущей ветки (НЕ всех выбранных тем)
-        "current_index": session.position if step else None,
-        "branch_answered": session.position,
-        "selected_topics": session.selected_topics,
-        "current": ({"id": step.node_id, "name": g.nodes[step.node_id]["name"],
-                     "definition": g.nodes[step.node_id].get("attributes", {}).get("def", "")}
-                    if step else None),
-        "next": ([{"id": p.node_id, "name": g.nodes[p.node_id]["name"]}
-                  for p in session.path[session.position + 1:session.position + 4]] if step else []),
-        "trace": trace,
-        "suggestions": suggestions,
-        "review": choosing and session.branch_number > 0,
-        "search_depth": session.search_depth,
-        "question_category": session.question_category,
+        'session_id': sid,
+        'ontology_id': session.ontology_id,
+        'ontology_title': session.ontology_title,
+        'active': session.active,
+        'reason': session.reason,
+        'question_count': session.quota,
+        'questions_answered': session.answered,
+        'remaining': max(0, session.quota - session.answered),
+        'can_finish': session.active and session.answered >= session.quota,
+        'mode': 'choose_start' if choosing else 'in_branch',
+        'allowed_count': total,
+        'explored_count': len(session.visited_nodes),
+        'branch_number': session.branch_number,
+        'branches_completed': session.branches_completed,
+        'course_length': total if focus else 0,
+        'current_index': max(0, len(session.visited_nodes) - 1) if focus else None,
+        'branch_answered': session.answered,
+        'selected_topics': session.selected_topics,
+        'current': ({'id': focus, 'name': graph.nodes[focus]['name'],
+                     'definition': graph.nodes[focus]['attributes'].get('def', '')}
+                    if focus else None),
+        'next': [{'id': item['id'], 'name': item['name']}
+                 for item in neighbors],
+        'neighbors': neighbors,
+        'neighbor_count': len(neighbors),
+        'trace': trace,
+        'suggestions': list(dict.fromkeys(suggestions)),
+        'review': focus is not None and len(session.visited_nodes) == total,
+        'search_depth': session.search_depth,
+        'question_category': session.question_category,
     }
 
 
@@ -324,16 +336,12 @@ def new_session(payload: CreateSession):
         missing = [node_id for node_id in roots if node_id not in g.nodes]
         if missing:
             raise HTTPException(422, f"В выбранной онтологии нет узлов с ID: {', '.join(missing)}")
-        full_path = g.learning_path(roots)
-        if payload.search_depth:
-            depths = {}
-            for step in full_path:
-                depths[step.node_id] = depths.get(step.parent_id, -1) + 1
-            allowed = {step.node_id for step in full_path if depths[step.node_id] <= payload.search_depth}
-        else:
-            allowed = {step.node_id for step in full_path}
+        # В отличие от прежнего DFS-фильтра, область включает родительские,
+        # дочерние и боковые узлы независимо от направления отношения.
+        # Пользовательский лимит глубины при этом сохраняется.
+        allowed = g.reachable_region(roots, payload.search_depth)
         sid = uuid4().hex
-        # Новый маршрут пока НЕ строим: пользователь задаст старт первым вопросом.
+        # Первое понятие выбирается вопросом, затем переходы свободны внутри области.
         s = Session(ontology_id=entry.id, ontology_title=entry.title, graph=g,
                     selected_topics=roots, quota=payload.question_count, allowed_nodes=allowed,
                     search_depth=payload.search_depth, question_category=payload.question_category)
@@ -376,113 +384,116 @@ def remember(s: Session, question: str, answer: str, result: str,
 @app.post("/api/sessions/{sid}/ask")
 def ask(sid: str, body: AskRequest):
     with lock:
-        s = sessions.get(sid)
-        if not s:
-            raise HTTPException(404, "Сессия не найдена")
-        if not s.active:
-            raise HTTPException(409, "Сессия завершена")
-        g = s.graph
+        session = sessions.get(sid)
+        if session is None:
+            raise HTTPException(404, 'Сессия не найдена')
+        if not session.active:
+            raise HTTPException(409, 'Сессия завершена')
+        graph = session.graph
         question = body.question.strip()
         if len(question) < 2:
-            raise HTTPException(422, "Введите вопрос")
-        choosing = not s.path or s.position >= len(s.path)
-        current_id = None if choosing else s.path[s.position].node_id
+            raise HTTPException(422, 'Введите вопрос')
+        focus = session.path[-1].node_id if session.path else None
         intent = detect_intent(question)
-        if s.question_category != 'any' and intent != s.question_category:
-            answer = (f"В настройках этого занятия выбрана категория вопросов «{s.question_category}». "
-                      "Сформулируйте вопрос этой категории или начните новую сессию с другими настройками. "
-                      "Вопрос не засчитан.")
-            remember(s, question, answer, 'unrecognized')
-            return {'result': 'unrecognized', 'answer': answer, 'sources': [], 'state': snapshot(sid, s)}
-        matched = g.matched_node(question, current_id, preferred_ids=s.allowed_nodes)
-        if not ("?" in question or re.match(r"(?i)^\s*(что|какая|какие|какой|как|из чего|зачем|почему|где|для чего|чем|сколько|расскажи|объясни|назови|можно|имеет|состоит|опиши|сравни|поясни|расскажи|подскажи)\b", question) or matched):
-            raise HTTPException(422, "Напишите вопрос или название понятия, например: «Что такое нейрон?»")
+        if session.question_category != 'any' and intent != session.question_category:
+            answer = (f'В настройках выбрана категория вопросов «{session.question_category}». '
+                      'Сформулируйте вопрос этой категории или начните новое занятие. '
+                      'Этот вопрос не засчитан.')
+            remember(session, question, answer, 'unrecognized')
+            return {'result': 'unrecognized', 'answer': answer, 'sources': [],
+                    'state': snapshot(sid, session)}
 
-        if choosing:
-            if matched is None:
-                variants = g.matched_concepts(question, s.allowed_nodes, limit=4,
-                                              include_weak=True, current_id=current_id)
-                names = [r['name'] for r in variants]
-                answer = ("Не удалось уверенно распознать понятие. " +
-                          ("Возможно, вы имели в виду: " + "; ".join(f"«{n}»" for n in names) + ". " if names else
-                           "Попробуйте назвать интересующее понятие точнее. ") + "Вопрос не засчитан.")
-                remember(s, question, answer, "unrecognized")
-                return {"result": "unrecognized", "answer": answer, "alternatives": variants, "sources": [], "state": snapshot(sid, s)}
-            if matched not in s.allowed_nodes:
-                outside_answer, sources = g.response(matched, question)
-                answer = ("Найдено понятие в загруженной онтологии, но оно не входит в выбранный учебный маршрут. "
-                          "Ниже справочный ответ (вопрос не засчитан).\n\n" + outside_answer +
-                          "\n\nДля включения этого понятия в маршрут выберите соответствующую тему в новой сессии.")
-                remember(s, question, answer, "out_of_scope", sources, matched)
-                return {"result": "out_of_scope", "answer": answer, "sources": sources,
-                        "answered_node": {"id": matched, "name": g.nodes[matched]["name"]},
-                        "state": snapshot(sid, s)}
-            # Стартовая точка выбрана САМИМ вопросом. DFS вычисляем лишь для неё.
-            s.path = [step for step in g.learning_path([matched]) if step.node_id in s.allowed_nodes]
-            s.position = 0
-            s.branch_number += 1
-            current_id = matched
-        else:
-            # Если ученик назвал непосредственного соседа, который ИДЁТ
-            # СЛЕДУЮЩИМ в текущем DFS-маршруте, даём изучить именно его.
-            # Это поддерживает последовательность «Алгоритм» ->
-            # «Алгоритм обучения» -> «Алгоритм обратного распространения».
-            # Другие дальние переходы по-прежнему не зачтены.
-            if (matched and matched != current_id
-                    and s.position + 1 < len(s.path)
-                    and s.path[s.position + 1].node_id == matched
-                    and g.graph_distance(current_id, matched, max_depth=1) == 1):
-                s.position += 1
-                current_id = matched
-            if matched and matched != current_id:
-                name = g.nodes[matched]["name"]
-                current_name = g.nodes[current_id]["name"]
-                # Свободный вопрос вне текущей ветки не меняет учебный маршрут.
-                future_steps = {p.node_id for p in s.path[s.position + 1:]}
-                if ((matched not in s.allowed_nodes) or
-                    (matched not in future_steps
-                     and matched not in {p.node_id for p in s.path[:s.position]}
-                     and current_id not in {p.node_id for p in g.learning_path([matched])})):
-                    aside_answer, sources = g.response(matched, question)
-                    answer = ("Дополнительный вопрос (без перехода на другую тему).\n\n"
-                              + aside_answer + f"\n\nПродолжение занятия: «{current_name}».")
-                    remember(s, question, answer, "aside", sources, matched)
-                    return {"result": "aside", "answer": answer, "sources": sources,
-                            "answered_node": {"id": matched, "name": name}, "state": snapshot(sid, s)}
-                answer = (f"Вы спросили о понятии «{name}». Сейчас изучаем «{current_name}». "
-                          "До него мы дойдём по маршруту. Сейчас спросите о текущем понятии; вопрос не засчитан.")
-                remember(s, question, answer, "out_of_order")
-                return {"result": "out_of_order", "answer": answer, "sources": [], "state": snapshot(sid, s)}
-            if matched is None and not g.is_contextual_question(question, current_id):
-                variants = g.matched_concepts(question, s.allowed_nodes, limit=4,
-                                              include_weak=True, current_id=current_id)
-                names = [r['name'] for r in variants]
-                answer = ("Не удалось связать вопрос с текущим понятием. " +
-                          ("Возможно, вы имели в виду: " + "; ".join(f"«{n}»" for n in names) + ". " if names else
-                           "Укажите название понятия. ") + "Вопрос не засчитан.")
-                remember(s, question, answer, "unrecognized")
-                return {"result": "unrecognized", "answer": answer, "alternatives": variants, "sources": [], "state": snapshot(sid, s)}
+        matched = graph.matched_node(question, focus,
+                                     preferred_ids=session.allowed_nodes)
+        if not ('?' in question or re.match(
+            r'(?i)^\s*(что|какая|какие|какой|как|из чего|зачем|почему|где|для чего|чем|сколько|расскажи|объясни|назови|можно|имеет|состоит|опиши|сравни|поясни|подскажи)\b',
+            question) or matched):
+            raise HTTPException(422, 'Напишите вопрос или название понятия.')
 
-        step = s.path[s.position]
-        answer, sources = g.response(current_id, question)
-        semantic_triples = g.semantic_triples(current_id, depth=1, limit=100)
-        via = g.describe_relation(g.relations[step.via_relation_id]) if step.via_relation_id else None
-        remember(s, question, answer, "answered", sources, current_id, via)
-        s.answered += 1
-        s.position += 1
-        finished_branch = s.position == len(s.path)
-        if finished_branch:
-            s.branches_completed += 1
-        state = snapshot(sid, s)
+        # Контекстное уточнение без имени («А для чего его используют?»)
+        # относится к последнему ИЗУЧЕННОМУ понятию, а не к узлу, который
+        # DFS когда-то поставил следующим.
+        if matched is None and focus and graph.is_contextual_question(question, focus):
+            matched = focus
+        if matched is None:
+            variants = graph.matched_concepts(question, session.allowed_nodes,
+                                              limit=5, include_weak=True,
+                                              current_id=focus)
+            names = [v['name'] for v in variants]
+            answer = ('Не удалось уверенно распознать понятие. '
+                      + ('Возможно, вы имели в виду: '
+                         + '; '.join(f'«{name}»' for name in names) + '. '
+                         if names else 'Уточните название понятия. ')
+                      + 'Вопрос не засчитан.')
+            remember(session, question, answer, 'unrecognized')
+            return {'result': 'unrecognized', 'answer': answer,
+                    'alternatives': variants, 'sources': [],
+                    'state': snapshot(sid, session)}
+        if matched not in session.allowed_nodes:
+            outside_answer, sources = graph.response(matched, question)
+            answer = ('Понятие найдено, но находится за пределами выбранной '
+                      'области или глубины занятия. Ниже справочный ответ '
+                      '(без зачёта).\n\n' + outside_answer
+                      + '\n\nЧтобы изучать его в этом занятии, начните новую '
+                      'сессию с более широкой темой или глубиной поиска.')
+            remember(session, question, answer, 'out_of_scope', sources, matched)
+            return {'result': 'out_of_scope', 'answer': answer,
+                    'sources': sources,
+                    'answered_node': {'id': matched,
+                                      'name': graph.nodes[matched]['name']},
+                    'state': snapshot(sid, session)}
+
+        # Пользователь МОЖЕТ задавать вопросы о любом доступном понятии.
+        # Соседство определяет подпись перехода, но не его допустимость.
+        transition = 'start' if focus is None else 'follow_up'
+        via = None
+        rel = None
+        if focus is not None and matched != focus:
+            direct = [relation for relation in
+                      graph.outgoing[focus] + graph.incoming[focus]
+                      if (relation['destination_node_id'] if
+                          relation['source_node_id'] == focus else
+                          relation['source_node_id']) == matched]
+            if direct:
+                # Только фактически существующая стрелка может быть причиной
+                # перехода; её семантическое направление не меняем.
+                rel = direct[0]
+                via = graph.describe_relation(rel)
+                transition = 'neighbor'
+            elif matched in session.visited_nodes:
+                transition = 'return'
+            else:
+                transition = 'topic_change'
+                session.branch_number += 1
+        elif focus is None:
+            session.branch_number = 1
+
+        answer, sources = graph.response(matched, question)
+        if transition == 'topic_change':
+            answer += ('\n\nВы перешли к другой части выбранной области. '
+                       'Можно также вернуться к предыдущему понятию.')
+        session.path.append(Step(matched,
+                                 via_relation_id=rel['id'] if rel else None,
+                                 via_relation_type=rel['name'] if rel else None,
+                                 parent_id=focus))
+        session.position = len(session.path) - 1
+        session.visited_nodes.add(matched)
+        session.answered += 1
+        finished = (len(session.visited_nodes) == len(session.allowed_nodes))
+        if finished and not session.branches_completed:
+            session.branches_completed = 1
+        triples = graph.semantic_triples(matched, depth=1, limit=100)
+        remember(session, question, answer, 'answered', sources, matched, via)
         return {
-            "result": "answered",
-            "answer": answer,
-            "answered_node": {"id": current_id, "name": g.nodes[current_id]["name"]},
-            "traversed_via": via,
-            "branch_completed": finished_branch,
-            "sources": sources,
-            "semantic_triples": semantic_triples,
-            "state": state,
+            'result': 'answered', 'answer': answer,
+            'answered_node': {'id': matched,
+                              'name': graph.nodes[matched]['name']},
+            'traversed_via': via,
+            'transition': transition,
+            'branch_completed': finished,
+            'sources': sources,
+            'semantic_triples': triples,
+            'state': snapshot(sid, session),
         }
 
 

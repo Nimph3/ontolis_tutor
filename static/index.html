@@ -23,7 +23,7 @@
           <p id="ontologyInfo" class="ontology-info">Выберите граф знаний для обучения.</p>
           <details id="relationSettings" class="relation-settings">
             <summary>Настроить типы связей <span id="relationWarning"></span></summary>
-            <p class="hint small">Для нестандартных связей выберите учебную роль. Нераспознанные связи не участвуют в маршруте.</p>
+            <p class="hint small">Неизвестные типы связей можно сопоставить с учебными ролями для объяснений. Просматривать соседние узлы можно и без сопоставления.</p>
             <div id="relationMap" class="relation-map"></div>
             <button id="saveRelations" type="button" class="mapping-save">Сохранить роли связей</button>
           </details>
@@ -31,7 +31,7 @@
         </section>
         <div class="sidebar-header"><span class="eyebrow">НАСТРОЙКИ ОБУЧЕНИЯ</span><span id="lockLabel" class="lock-label">Доступны</span></div>
         <h2>Что изучаем?</h2>
-        <p class="hint">Отметьте доступные темы. С какого понятия начать, решите первым вопросом в чате. Затем будем изучать связанные понятия по учебному маршруту.</p>
+        <p class="hint">Отметьте доступные темы. С какого понятия начать, решите первым вопросом в чате. Затем можно свободно переходить по связям к соседним понятиям и возвращаться назад.</p>
         <label class="field-label" for="searchTopics">Поиск понятий</label>
         <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="searchTopics" type="search" placeholder="Например, нейрон…" autocomplete="off"></div>
         <div class="topic-actions"><button id="allTopics" type="button" class="text-action">Выбрать все</button><button id="clearTopics" type="button" class="text-action">Снять все</button><span id="selectedCount">0 выбрано</span></div>
@@ -39,7 +39,7 @@
         <div class="divider"></div>
         <label class="field-label" for="questionCount">Минимум вопросов на сессию</label>
         <div class="number-wrap"><input id="questionCount" type="number" min="1" max="100" value="2"><span>вопроса</span></div>
-        <label class="field-label" for="studyDepth">Глубина учебного маршрута</label>
+        <label class="field-label" for="studyDepth">Глубина доступной области</label>
         <select id="studyDepth" aria-label="Глубина учебного обхода"><option value="0">Без ограничения</option><option value="1">1 уровень</option><option value="2">2 уровня</option><option value="3">3 уровня</option></select>
         <label class="field-label" for="questionCategory">Категория вопросов</label>
         <select id="questionCategory" aria-label="Категория учебных вопросов"><option value="any">Все категории</option><option value="definition">Определения</option><option value="purpose">Назначение</option><option value="composition">Состав</option><option value="types">Разновидности</option><option value="relations">Связи</option><option value="compare">Сравнение</option><option value="operation">Принцип работы</option><option value="input">Входные данные</option><option value="output">Выходные данные</option></select>
@@ -61,7 +61,7 @@
       </div>
 
       <div class="overview">
-        <section class="current-card" aria-live="polite"><div class="section-caption"><span class="card-icon">◈</span> ТЕКУЩАЯ ТЕМА <span id="topicIndex" class="right-soft">—</span></div><h2 id="currentTopic">Выберите тему слева</h2><p id="currentHint">Первый вопрос определяет учебный маршрут</p><div id="lessonPath" class="lesson-path"></div><button id="graphButton" type="button" class="graph-launch">◉ Посмотреть граф связей</button></section>
+        <section class="current-card" aria-live="polite"><div class="section-caption"><span class="card-icon">◈</span> ТЕКУЩАЯ ТЕМА <span id="topicIndex" class="right-soft">—</span></div><h2 id="currentTopic">Выберите тему слева</h2><p id="currentHint">Первый вопрос задаёт начальную точку</p><div id="lessonPath" class="lesson-path"></div><button id="graphButton" type="button" class="graph-launch">◉ Посмотреть граф связей</button></section>
         <section class="progress-card"><div class="section-caption">ПРОГРЕСС СЕССИИ <span class="right-soft">◷</span></div><div class="progress-row"><strong id="countProgress">0 / 2</strong><span id="progressLabel">вопросов</span></div><div class="progress-track"><div class="progress-fill" id="progressBar"></div></div><p id="progressHint">Начните с выбранных тем.</p><div class="footer-buttons"><button id="finishButton" type="button" class="secondary-button" disabled>Завершить</button><button id="forceButton" type="button" class="danger-link" disabled>Завершить досрочно</button></div></section>
       </div>
 
@@ -86,9 +86,9 @@
     <div class="modal-head"><div><span class="eyebrow">НАЧАЛО РАБОТЫ</span><h2 id="helpTitle">Как пользоваться OntoTutor</h2><p>Изучайте понятия и отношения между ними в выбранном графе знаний.</p></div><button class="modal-close" id="closeHelp" type="button" aria-label="Закрыть справку">×</button></div>
     <ol class="help-steps">
       <li><strong>Выберите область знаний.</strong> Используйте список слева или загрузите свой экспорт ONTOLIS (.ont).</li>
-      <li><strong>Отметьте темы.</strong> Можно выбрать одну или несколько; задайте число вопросов, глубину обхода и категорию вопросов.</li>
-      <li><strong>Начните занятие.</strong> Спросите о любом выбранном понятии. Программа предложит учебный маршрут.</li>
-      <li><strong>Спрашивайте своими словами.</strong> Например, «Что это?», «Для чего используется?» или «Какие части есть?». Если вопрос не распознан, уточните формулировку или используйте подсказку.</li>
+      <li><strong>Отметьте темы.</strong> Можно выбрать одну или несколько; задайте число вопросов, глубину доступной области и категорию вопросов.</li>
+      <li><strong>Начните занятие.</strong> Спросите о любом выбранном понятии. Программа покажет связанные понятия, к которым можно перейти в любом порядке.</li>
+      <li><strong>Спрашивайте своими словами.</strong> Например, «Что это?», «Для чего используется?» или «Что такое [название соседнего понятия]?». Если вопрос не распознан, уточните формулировку или используйте подсказку.</li>
       <li><strong>Посмотрите связи.</strong> Нажмите «Посмотреть граф связей» или кнопку под ответом. Клик по узлу откроет его определение.</li>
       <li><strong>Завершите занятие.</strong> Кнопка «Завершить» становится доступной после заданного минимума. «Завершить досрочно» доступна всегда.</li>
     </ol>

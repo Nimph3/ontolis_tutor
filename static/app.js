@@ -85,7 +85,7 @@ function showMessage(role, content, result = null) {
   const outer = document.createElement('article');
   outer.className = `chat-message ${role === 'user' ? 'me' : 'bot'} ${['out_of_order', 'out_of_scope', 'unrecognized'].includes(result?.result) ? 'notice' : ''}`;
   const caption = document.createElement('span'); caption.className = 'message-caption';
-  caption.textContent = role === 'user' ? 'Вы' : result?.result === 'out_of_order' ? 'Подсказка по порядку' : result?.result === 'out_of_scope' ? 'Тема вне выбранной области' : 'OntoTutor · онтология';
+  caption.textContent = role === 'user' ? 'Вы' : result?.result === 'out_of_scope' ? 'Тема вне выбранной области' : 'OntoTutor · онтология';
   const bubble = document.createElement('div'); bubble.className = 'message-bubble'; bubble.textContent = content;
   outer.append(caption, bubble);
   if (role === 'bot' && ['answered', 'aside', 'out_of_scope'].includes(result?.result) && result?.answered_node?.id) {
@@ -123,25 +123,25 @@ function displayState(state) {
   $('sessionBadge').textContent = state.active ? '● Сессия активна' : state.reason === 'forced' ? 'Сессия прервана' : '✓ Сессия завершена';
   $('sessionBadge').classList.toggle('active', state.active);
   $('currentTopic').textContent = picking ? 'Выберите точку вопросом' : state.current.name;
-  $('currentHint').textContent = picking ? (state.branches_completed ? 'Тема изучена · можно начать следующую' : 'Можно начать с любой выбранной темы или её подтемы') : 'Изучаем понятия по порядку; задайте вопрос о текущей теме.';
+  $('currentHint').textContent = picking ? ('Можно начать с любого понятия в выбранной области') : 'Выберите любое связанное понятие или продолжите задавать вопросы о текущем.';
   $('topicIndex').textContent = picking ? (state.branches_completed ? '✓' : '—') : `${state.current_index + 1} / ${state.course_length}`;
   $('countProgress').textContent = `${state.questions_answered} / ${state.question_count}`;
   $('progressBar').style.width = `${Math.min(100, Math.round(state.questions_answered / state.question_count * 100))}%`;
-  $('progressHint').textContent = state.active ? (picking ? `Доступно ${state.allowed_count} понятий · завершено веток: ${state.branches_completed}` : `Ветка ${state.branch_number}: ${state.branch_answered} из ${state.course_length} · осталось до минимума: ${state.remaining}`) : 'Можно начать новую сессию';
+  $('progressHint').textContent = state.active ? (picking ? `Доступно ${state.allowed_count} понятий · завершено веток: ${state.branches_completed}` : `Изучено ${state.explored_count} из ${state.allowed_count} понятий · рядом ${state.neighbor_count} · осталось до минимума: ${state.remaining}`) : 'Можно начать новую сессию';
   $('finishButton').disabled = !state.can_finish;
   $('forceButton').disabled = !state.active;
-  $('composerStatus').textContent = !state.active ? 'Настройки доступны' : picking ? 'Выберите понятие вопросом' : `Тема ${state.branch_number} · шаг ${state.current_index + 1}/${state.course_length}`;
-  $('chatMode').textContent = picking ? 'Режим: выбор темы' : 'Режим: изучение темы';
+  $('composerStatus').textContent = !state.active ? 'Настройки доступны' : picking ? 'Выберите понятие вопросом' : `Свободное изучение · ${state.explored_count}/${state.allowed_count} понятий`;
+  $('chatMode').textContent = picking ? 'Режим: выбор темы' : 'Режим: исследование графа';
   $('statusMode').textContent = !state.active ? 'Завершено' : picking ? 'Выбор темы' : 'Изучение';
   $('statusTopic').textContent = picking ? 'Выберите понятие вопросом' : state.current.name;
   $('statusStep').textContent = state.active ? `${state.questions_answered} / ${state.question_count}` : `${state.questions_answered} завершено`;
   $('statusAction').textContent = !state.active ? 'Можно изменить настройки или начать новое занятие' : picking
-    ? 'Напишите первый вопрос' : `Сейчас: «${state.current.name}». Задайте вопрос`;
+    ? 'Напишите первый вопрос' : `Сейчас: «${state.current.name}». Можно спросить о любом соседнем понятии`;
   $('graphButton').disabled = !(state.current?.id || selected.size);
   const path = $('lessonPath'); path.replaceChildren();
   if (picking) {
     const chip = document.createElement('span'); chip.className = 'path-chip';
-    chip.textContent = state.branches_completed ? '✓ Можно выбрать новую ветку' : 'Первый вопрос определяет маршрут';
+    chip.textContent = 'Первый вопрос выбирает начальное понятие';
     path.append(chip);
   } else {
     for (const item of state.trace.slice(-2)) {
@@ -149,7 +149,7 @@ function displayState(state) {
     }
     if (state.next.length) {
       const chip = document.createElement('span'); chip.className = 'path-chip next-chip';
-      chip.textContent = `Далее: ${state.next[0].name}`; path.append(chip);
+      chip.textContent = `Рядом: ${state.next.length} понятий`;  path.append(chip);
     }
   }
   const suggestions = $('suggestions'); suggestions.replaceChildren();
@@ -167,7 +167,7 @@ function resetChat() {
   $('sessionBadge').textContent = 'Сессия не начата';
   $('sessionBadge').classList.remove('active');
   $('currentTopic').textContent = 'Выберите тему слева';
-  $('currentHint').textContent = 'Первый вопрос выберет начало ветки';
+  $('currentHint').textContent = 'Первый вопрос выберет начальное понятие';
   $('topicIndex').textContent = '—';
   $('countProgress').textContent = `0 / ${$('questionCount').value || 2}`;
   $('progressBar').style.width = '0%';
@@ -318,7 +318,7 @@ async function start() {
     });
     localStorage.setItem('ontotutor_session_id', data.session_id);
     $('messages').replaceChildren(); displayState(data);
-    showMessage('bot', `Начнём изучение. Задайте первый вопрос по одной из выбранных тем. Я объясню понятие и покажу связанные с ним темы. Для завершения занятия нужно задать не менее ${count} вопросов. Если потребуется помощь, нажмите «Справка».`);
+    showMessage('bot', `Начнём изучение. Задайте вопрос по выбранной теме. Затем можно переходить к любому связанному понятию, возвращаться назад или уточнять ответ — порядок не ограничен DFS. Для завершения занятия нужно задать не менее ${count} вопросов. Если потребуется помощь, нажмите «Справка».`);
     $('messageInput').focus();
   } catch (error) { setError(error.message); $('startButton').disabled = false; }
 }
@@ -332,9 +332,6 @@ async function send() {
     const data = await callApi(`/api/sessions/${currentSession.session_id}/ask`, 'POST', {question});
     showMessage('user', question); showMessage('bot', data.answer, data);
     $('messageInput').value = ''; displayState(data.state);
-    if (data.result === 'answered' && data.branch_completed) {
-      showMessage('bot', 'Ветка полностью пройдена! Теперь можно задать новый вопрос по любому понятию из выбранной области — и начать следующую ветку.');
-    }
     if (data.result === 'answered' && data.state.can_finish && data.state.questions_answered === data.state.question_count) {
       showMessage('bot', 'Минимальное количество вопросов выполнено. Можно завершить сессию или продолжить обучение.');
     }

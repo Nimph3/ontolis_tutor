@@ -198,6 +198,61 @@ class Ontology:
                 seen.add(child)
                 yield child, relation
 
+    def reachable_region(self, roots: list[str], max_depth: int = 0) -> set[str]:
+        """Область занятия по любым реальным рёбрам, включая входящие.
+
+        0 означает всю связную компоненту каждого выбранного корня. Типы
+        отношений влияют на объяснение, но не запрещают перемещение по графу.
+        """
+        from collections import deque
+
+        distances = {root: 0 for root in roots if root in self.nodes}
+        queue = deque(distances)
+        while queue:
+            nid = queue.popleft()
+            if max_depth and distances[nid] >= max_depth:
+                continue
+            for relation in self.outgoing[nid] + self.incoming[nid]:
+                other = (relation['destination_node_id']
+                         if relation['source_node_id'] == nid
+                         else relation['source_node_id'])
+                if other not in distances:
+                    distances[other] = distances[nid] + 1
+                    queue.append(other)
+        return set(distances)
+
+    def adjacent_concepts(self, node_id: str,
+                          included: set[str] | None = None) -> list[dict]:
+        """Все соседние понятия без ограничения DFS или направления стрелки.
+
+        Повторные отношения между двумя узлами объединены в одной подсказке,
+        но информация об этих отношениях не теряется.
+        """
+        if node_id not in self.nodes:
+            raise KeyError(node_id)
+        grouped: dict[str, dict] = {}
+        seen_relations: set[str] = set()
+        for relation in self.outgoing[node_id] + self.incoming[node_id]:
+            if relation['id'] in seen_relations:
+                continue
+            seen_relations.add(relation['id'])
+            outgoing = relation['source_node_id'] == node_id
+            other = (relation['destination_node_id'] if outgoing
+                     else relation['source_node_id'])
+            if included is not None and other not in included:
+                continue
+            entry = grouped.setdefault(other, {
+                'id': other, 'name': self.nodes[other]['name'], 'relations': []
+            })
+            entry['relations'].append({
+                'id': relation['id'], 'type': relation['name'],
+                'role': self.relation_kind(relation),
+                'direction': 'out' if outgoing else 'in',
+            })
+        return sorted(grouped.values(), key=lambda item: (
+            item['name'].casefold(), str(item['id'])
+        ))
+
     def learning_path(self, roots: list[str]) -> list[Step]:
         """Итеративный DFS: сначала вся ветка, потом следующая ветка."""
         visited = set()

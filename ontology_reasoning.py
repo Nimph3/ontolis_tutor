@@ -258,8 +258,9 @@ class OntologyReasoner:
                         if not child['attributes'].get('def'):
                             continue
                         meaning = g.definition_text(child).strip()
-                        if len(meaning) > 230:
-                            meaning = meaning[:230].rsplit(' ', 1)[0] + '…'
+                        # Определения являются данными онтологии. Не обрезаем
+                        # их до фиксированной длины: пользователь должен
+                        # получать полный исходный текст.
                         statements.append(f'«{child["name"]}» при этом означает следующее: {sentence(meaning)}')
                         explained.add(near_id)
                         source.append({'node_id': near_id, 'field': child['_definition_source']})
